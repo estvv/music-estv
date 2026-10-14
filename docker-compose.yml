@@ -1,0 +1,106 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: music-db-estv
+    # Private network only: never reachable from Caddy or the outside.
+    networks:
+      - internal
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=music
+      - POSTGRES_DB=music
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U music -d music"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  backend:
+    build:
+      context: ./backend
+    container_name: music-backend-estv
+    expose:
+      - "8080"
+    networks:
+      - caddy_net
+      - internal
+    depends_on:
+      db:
+        condition: service_healthy
+    # Secrets come from ./.env (see .env.example), interpolated by compose.
+    environment:
+      - DATABASE_URL=postgres://music:${POSTGRES_PASSWORD}@db:5432/music
+      - PORT=8080
+      - NODE_ENV=production
+      - PUBLIC_URL=${PUBLIC_URL}
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_DISPLAY_NAME=${ADMIN_DISPLAY_NAME:-}
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: '0.75'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - VITE_API_URL=/api
+    container_name: music-frontend-estv
+    expose:
+      - "80"
+    networks:
+      - caddy_net
+    depends_on:
+      - backend
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.5'
+        reservations:
+          memory: 48M
+          cpus: '0.15'
+
+volumes:
+  # `docker compose down -v` wipes the database.
+  pgdata:
+
+networks:
+  caddy_net:
+    external: true
+  internal:

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.db
+*.db-*
+*.log
+.env
+.env.local
+data/
+docker-compose.override.yml
+Makefile
+*.tsbuildinfo
