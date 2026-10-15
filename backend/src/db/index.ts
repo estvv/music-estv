@@ -23,7 +23,7 @@ if (testSchema) {
   });
 }
 
-type Param = string | number | boolean | null | undefined | Date | number[] | string[];
+type Param = string | number | boolean | null | undefined | Date | number[] | string[] | Buffer;
 type Queryable = pg.Pool | pg.PoolClient;
 
 // `?` placeholders (as in the SQLite days) become $1, $2… No query in this

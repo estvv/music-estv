@@ -22,3 +22,11 @@ body {
     animation-duration: 0.01ms !important;
   }
 }
+
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+}

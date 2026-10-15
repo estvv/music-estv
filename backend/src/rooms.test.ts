@@ -11,15 +11,18 @@ import {
   submitAnswer, verdict, type Room,
 } from './services/rooms.js';
 import { hitsOnly } from './services/blindtest.js';
+import { STEPS_MS } from './services/songless.js';
 
 const app = createApp();
 let hostId: number;
+let sourceId: number;
 
 beforeAll(async () => {
   const host = (await db.get<{ id: number }>(`INSERT INTO users (username, display_name, password_hash) VALUES ('host', 'Host', ?) RETURNING id`,
     [await hashPassword('host-password-123')]))!;
   hostId = host.id;
-  const source = (await db.get<{ id: number }>(`INSERT INTO sources (kind, ref, name, in_daily_pool) VALUES ('deezer_playlist', 'r1', 'Party', true) RETURNING id`))!;
+  const source = (await db.get<{ id: number }>(`INSERT INTO sources (kind, ref, name) VALUES ('deezer_playlist', 'r1', 'Party') RETURNING id`))!;
+  sourceId = source.id;
   const songs = [[201, 'Song A', 'Artist A'], [202, 'Song B', 'Artist B'], [203, 'Song C', 'Artist C'], [204, 'Song D', 'Artist D']] as const;
   for (const [deezerId, title, artist] of songs) {
     const t = (await db.get<{ id: number }>('INSERT INTO tracks (deezer_id, title, artist) VALUES (?, ?, ?) RETURNING id', [deezerId, title, artist]))!;
@@ -35,7 +38,7 @@ const rightChoice = (room: Room) => {
 
 describe('room engine', () => {
   it('runs a multiple-choice round and closes it once everyone answered', async () => {
-    const room = createRoom(host(), { game: 'blindtest', answerMode: 'mcq', rounds: 2 });
+    const room = createRoom(host(), { sourceId, game: 'blindtest', answerMode: 'mcq', rounds: 2 });
     const alice = joinRoom(room, { name: 'Alice' });
     const bob = joinRoom(room, { name: 'Bob' });
     expect(() => joinRoom(room, { name: 'alice' })).toThrow(/taken/);
@@ -66,7 +69,7 @@ describe('room engine', () => {
   });
 
   it('pauses on a buzz and lets the host judge', () => {
-    const room = createRoom(host(), { game: 'blindtest', answerMode: 'buzzer', rounds: 3 });
+    const room = createRoom(host(), { sourceId, game: 'blindtest', answerMode: 'buzzer', rounds: 3 });
     const alice = joinRoom(room, { name: 'Alice' });
     const bob = joinRoom(room, { name: 'Bob' });
     return startGame(room).then(() => {
@@ -88,7 +91,7 @@ describe('room engine', () => {
   });
 
   it('plays songless with longer clips until everyone found', async () => {
-    const room = createRoom(host(), { game: 'songless', answerMode: 'type', rounds: 3 });
+    const room = createRoom(host(), { sourceId, game: 'songless', answerMode: 'type', rounds: 3 });
     const alice = joinRoom(room, { name: 'Alice' });
     const bob = joinRoom(room, { name: 'Bob' });
     await startGame(room);
@@ -110,7 +113,7 @@ describe('room engine', () => {
     await submitAnswer(room, bob, { deezer_id: answerDeezer });
     expect(room.round!.step).toBe(1);
     expect(room.round!.phase).toBe('loading');
-    expect(roomState(room, { host: true }).round!.clip_ms).toBe(500);
+    expect(roomState(room, { host: true }).round!.clip_ms).toBe(STEPS_MS[1]);
 
     audioStarted(room);
     await submitAnswer(room, alice, { deezer_id: answerDeezer });
@@ -121,7 +124,7 @@ describe('room engine', () => {
   });
 
   it('reveals songless after the last clip', async () => {
-    const room = createRoom(host(), { game: 'songless', answerMode: 'type', rounds: 3 });
+    const room = createRoom(host(), { sourceId, game: 'songless', answerMode: 'type', rounds: 3 });
     joinRoom(room, { name: 'Solo' });
     await startGame(room);
     for (let i = 0; i < 7; i++) advanceStep(room);
@@ -129,7 +132,7 @@ describe('room engine', () => {
   });
 
   it('saves account standings when the party ends', async () => {
-    const room = createRoom(host(), { game: 'blindtest', answerMode: 'mcq', rounds: 3 });
+    const room = createRoom(host(), { sourceId, game: 'blindtest', answerMode: 'mcq', rounds: 3 });
     joinRoom(room, { userId: hostId, userName: 'Host' });
     joinRoom(room, { name: 'Guest' });
     await startGame(room);
@@ -150,11 +153,46 @@ describe('room engine', () => {
     expect(await hitsOnly(ids, 3)).toHaveLength(4);
   });
 
-  it('refuses "who liked it" without two Spotify-linked accounts', async () => {
+  it('gives rooms a 6-letter code without ambiguous letters', () => {
+    const room = createRoom(host(), { sourceId, game: 'blindtest', answerMode: 'mcq', rounds: 3 });
+    expect(room.code).toMatch(/^[A-HJ-NP-Z]{6}$/);
+  });
+
+  it('refuses "who liked it" without two linked accounts', async () => {
     const room = createRoom(host(), { game: 'wholiked', answerMode: 'mcq', rounds: 3 });
     joinRoom(room, { name: 'Guest' });
     await expect(startGame(room)).rejects.toThrow(/2 players/);
     expect(room.phase).toBe('lobby');
+  });
+
+  it('mixes Deezer and Spotify tastes, matching a shared song across services', async () => {
+    const { vi } = await import('vitest');
+    const deezer = await import('./services/deezer.js');
+    const ids: number[] = [];
+    for (const name of ['dz_a', 'dz_b']) {
+      const u = (await db.get<{ id: number }>(`INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, 'x') RETURNING id`, [name, name]))!;
+      await db.run('INSERT INTO deezer_links (user_id, deezer_user_id, name) VALUES (?, ?, ?)', [u.id, u.id, name]);
+      ids.push(u.id);
+    }
+    // Same song under two Deezer ids (two releases), plus one song each.
+    const track = (id: number, title: string, artist: string) => ({
+      id, readable: true, preview: 'https://x', title, title_short: title, duration: 200, rank: 1,
+      artist: { id: 1, name: artist }, album: { id: 1, title },
+    });
+    const tastes: Record<number, ReturnType<typeof track>[]> = {
+      [ids[0]]: [track(301, 'Shared Song', 'Band'), track(302, 'Only A', 'Solo')],
+      [ids[1]]: [track(401, 'Shared Song (Remastered)', 'Band'), track(303, 'Only B', 'Duo')],
+    };
+    const spy = vi.spyOn(deezer, 'getUserTasteTracks').mockImplementation(async (id) => tastes[Number(id)] as never);
+
+    const room = createRoom(host(), { game: 'wholiked', answerMode: 'mcq', rounds: 3 });
+    const a = joinRoom(room, { userId: ids[0], userName: 'dz_a' });
+    const b = joinRoom(room, { userId: ids[1], userName: 'dz_b' });
+    await startGame(room);
+    expect(room.rounds).toHaveLength(3);
+    const shared = room.rounds.find((r) => room.tracks.get(r.trackId)!.title.startsWith('Shared Song'))!;
+    expect(new Set(shared.owners)).toEqual(new Set([a.id, b.id]));
+    spy.mockRestore();
   });
 });
 
@@ -202,7 +240,7 @@ describe('room over WebSocket', () => {
   it('lets a guest join with a nickname and play against the host screen', async () => {
     const login = await request(app).post('/api/auth/login').send({ username: 'host', password: 'host-password-123' });
     const cookie = login.headers['set-cookie'][0].split(';')[0];
-    const created = await request(app).post('/api/rooms').set('Cookie', cookie).send({ game: 'blindtest', answer_mode: 'mcq', rounds: 3 });
+    const created = await request(app).post('/api/rooms').set('Cookie', cookie).send({ game: 'blindtest', answer_mode: 'mcq', rounds: 3, source_id: sourceId });
     const code = created.body.data.code as string;
 
     const info = await request(app).get(`/api/rooms/${code.toLowerCase()}`);

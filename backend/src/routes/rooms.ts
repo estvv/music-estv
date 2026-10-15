@@ -4,6 +4,7 @@ import { requireUser } from '../auth/session.js';
 import { getPreviewBytes } from '../services/deezer.js';
 import { clipMs, createRoom, currentTrack, playerByToken, requireRoom, RoomError } from '../services/rooms.js';
 import { searchSongs } from '../services/search.js';
+import { getVisibleSource } from '../services/sources.js';
 import { sliceLength } from '../services/songless.js';
 
 // HTTP side of party rooms. Everything live goes through the WebSocket
@@ -16,12 +17,13 @@ const createBody = z.object({
   source_id: z.number().int().positive().optional(),
   rounds: z.number().int().min(3).max(30).default(10),
   hits: z.boolean().default(false),
-});
+}).refine((b) => b.game === 'wholiked' || b.source_id, { message: 'Pick a playlist' });
 
-router.post('/', requireUser, (req, res, next) => {
+router.post('/', requireUser, async (req, res, next) => {
   const parsed = createBody.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ success: false, error: 'Invalid request' });
   try {
+    if (parsed.data.source_id) await getVisibleSource(parsed.data.source_id, req.user!.id);
     const room = createRoom(req.user!, {
       game: parsed.data.game,
       answerMode: parsed.data.game === 'wholiked' ? 'mcq' : parsed.data.game === 'songless' ? 'type' : parsed.data.answer_mode,

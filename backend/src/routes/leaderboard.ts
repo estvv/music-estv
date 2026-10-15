@@ -1,114 +1,91 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { db } from '../db/index.js';
 import { route } from '../http.js';
-import { MAX_STEPS, today } from '../services/songless.js';
+import { records, SINCE } from '../services/stats.js';
+import { AVATAR_URL_SQL } from '../services/avatars.js';
 
 const router = Router();
 
-// Current and best run of consecutive days won, from a list of won days.
-export function streaks(wonDays: string[], currentDay: string): { current: number; best: number } {
-  const days = new Set(wonDays);
-  const shift = (day: string, delta: number) => {
-    const d = new Date(`${day}T12:00:00Z`);
-    d.setUTCDate(d.getUTCDate() + delta);
-    return d.toISOString().slice(0, 10);
-  };
+// One board per game, over a period, already in ranking order. Every row
+// carries its game's stats for the table.
+const query = z.object({
+  game: z.enum(['songless', 'blindtest', 'party']).default('songless'),
+  period: z.enum(['week', 'month', 'all']).default('all'),
+});
 
-  let best = 0;
-  for (const day of days) {
-    if (days.has(shift(day, -1))) continue; // not the start of a run
-    let length = 1;
-    while (days.has(shift(day, length))) length += 1;
-    best = Math.max(best, length);
-  }
-
-  // A streak survives until today's daily is lost or the day ends unplayed.
-  let cursor = days.has(currentDay) ? currentDay : shift(currentDay, -1);
-  let current = 0;
-  while (days.has(cursor)) {
-    current += 1;
-    cursor = shift(cursor, -1);
-  }
-  return { current, best };
+// Songless: 4 points for a song found on the first clip, down to 1 on the last.
+function songless(since: string) {
+  return db.all(`
+    SELECT u.id AS user_id, u.username, u.display_name, ${AVATAR_URL_SQL} AS avatar_url,
+      SUM(g.score)::int AS points,
+      COUNT(*) AS played,
+      COUNT(*) FILTER (WHERE g.status = 'won') AS won,
+      COUNT(*) FILTER (WHERE g.status = 'won' AND g.step = 0) AS first_try,
+      ROUND(AVG(g.step + 1) FILTER (WHERE g.status = 'won'), 1)::float AS avg_attempts
+    FROM songless_games g JOIN users u ON u.id = g.user_id
+    LEFT JOIN spotify_links sl ON sl.user_id = u.id
+    WHERE g.status != 'playing' AND g.finished_at >= ${since} AND NOT u.disabled
+    GROUP BY u.id, sl.user_id
+    ORDER BY points DESC, won DESC, u.display_name
+  `);
 }
 
-router.get('/daily', route(async (req, res) => {
-  const day = typeof req.query.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.day) ? req.query.day : today();
-  // Only finished games are ranked; a game in progress would leak nothing but
-  // still clutters the board.
-  const rows = await db.all(`
-    SELECT u.id AS user_id, u.display_name, g.status, g.score, g.step, g.finished_at
-    FROM songless_games g JOIN users u ON u.id = g.user_id
-    WHERE g.mode = 'daily' AND g.day = ? AND g.status != 'playing'
-    ORDER BY g.score DESC, g.finished_at ASC
-  `, [day]);
-  res.json({ success: true, data: { day, rows } });
+// Blind test: totals over finished runs, plus a per-track average that does
+// not favour long runs.
+function blindtest(since: string) {
+  return db.all(`
+    WITH runs AS (
+      SELECT b.user_id, b.score,
+        jsonb_array_length(b.rounds::jsonb) AS tracks,
+        (SELECT COUNT(*) FROM jsonb_array_elements(b.rounds::jsonb) r WHERE r->'result'->>'kind' = 'right') AS found
+      FROM blindtests b
+      WHERE b.status = 'finished' AND b.finished_at >= ${since}
+    )
+    SELECT u.id AS user_id, u.username, u.display_name, ${AVATAR_URL_SQL} AS avatar_url,
+      SUM(r.score)::int AS points,
+      COUNT(*) AS played,
+      MAX(r.score) AS best,
+      SUM(r.found)::int AS found,
+      SUM(r.tracks)::int AS tracks,
+      ROUND(SUM(r.score)::numeric / NULLIF(SUM(r.tracks), 0))::int AS per_track
+    FROM runs r JOIN users u ON u.id = r.user_id
+    LEFT JOIN spotify_links sl ON sl.user_id = u.id
+    WHERE NOT u.disabled
+    GROUP BY u.id, sl.user_id
+    ORDER BY points DESC, best DESC, u.display_name
+  `);
+}
+
+// Party rooms: wins first, then podiums, then points scored.
+function party(since: string) {
+  return db.all(`
+    SELECT u.id AS user_id, u.username, u.display_name, ${AVATAR_URL_SQL} AS avatar_url,
+      COUNT(*) FILTER (WHERE p.rank = 1) AS wins,
+      COUNT(*) FILTER (WHERE p.rank <= 3) AS podiums,
+      COUNT(*) AS played,
+      SUM(p.score)::int AS points
+    FROM party_results p JOIN users u ON u.id = p.user_id
+    LEFT JOIN spotify_links sl ON sl.user_id = u.id
+    WHERE p.played_at >= ${since} AND NOT u.disabled
+    GROUP BY u.id, sl.user_id
+    ORDER BY wins DESC, podiums DESC, points DESC, u.display_name
+  `);
+}
+
+router.get('/', route(async (req, res) => {
+  const parsed = query.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ success: false, error: 'Invalid request' });
+  const { game, period } = parsed.data;
+  const since = SINCE[period];
+  const rows = game === 'songless' ? await songless(since) : game === 'blindtest' ? await blindtest(since) : await party(since);
+  res.json({ success: true, data: { game, period, rows } });
 }));
 
-router.get('/all', route(async (_req, res) => {
-  const day = today();
-  const users = await db.all<{ id: number; display_name: string }>('SELECT id, display_name FROM users WHERE NOT disabled');
-  const totals = await db.all<{ user_id: number; daily_score: number; daily_played: number; daily_won: number; free_score: number; free_played: number }>(`
-    SELECT user_id,
-      SUM(CASE WHEN mode = 'daily' THEN score ELSE 0 END) AS daily_score,
-      SUM(CASE WHEN mode = 'daily' AND status != 'playing' THEN 1 ELSE 0 END) AS daily_played,
-      SUM(CASE WHEN mode = 'daily' AND status = 'won' THEN 1 ELSE 0 END) AS daily_won,
-      SUM(CASE WHEN mode = 'free' THEN score ELSE 0 END) AS free_score,
-      SUM(CASE WHEN mode = 'free' AND status != 'playing' THEN 1 ELSE 0 END) AS free_played
-    FROM songless_games GROUP BY user_id
-  `);
-  const parties = await db.all<{ user_id: number; party_played: number; party_won: number }>(`
-    SELECT user_id, COUNT(*) AS party_played, SUM(CASE WHEN rank = 1 THEN 1 ELSE 0 END) AS party_won
-    FROM party_results GROUP BY user_id
-  `);
-  const wonDays = await db.all<{ user_id: number; day: string }>(
-    `SELECT user_id, day FROM songless_games WHERE mode = 'daily' AND status = 'won'`,
-  );
-
-  const rows = users.map((u) => {
-    const t = totals.find((x) => x.user_id === u.id);
-    const party = parties.find((x) => x.user_id === u.id);
-    return {
-      user_id: u.id,
-      display_name: u.display_name,
-      daily_score: t?.daily_score ?? 0,
-      daily_played: t?.daily_played ?? 0,
-      daily_won: t?.daily_won ?? 0,
-      free_score: t?.free_score ?? 0,
-      free_played: t?.free_played ?? 0,
-      party_played: party?.party_played ?? 0,
-      party_won: party?.party_won ?? 0,
-      ...streaks(wonDays.filter((w) => w.user_id === u.id).map((w) => w.day), day),
-    };
-  }).filter((r) => r.daily_played + r.free_played + r.party_played > 0)
-    .sort((a, b) => b.daily_score - a.daily_score || b.free_score - a.free_score);
-
-  res.json({ success: true, data: rows });
-}));
-
-router.get('/me', route(async (req, res) => {
-  const games = await db.all<{ day: string; status: string; step: number }>(`
-    SELECT day, status, step FROM songless_games WHERE user_id = ? AND mode = 'daily' AND status != 'playing'
-  `, [req.user!.id]);
-
-  // Wordle-style distribution: wins per step, plus losses.
-  const distribution = Array.from({ length: MAX_STEPS }, () => 0);
-  let lost = 0;
-  for (const g of games) {
-    if (g.status === 'won') distribution[g.step] += 1;
-    else lost += 1;
-  }
-
-  res.json({
-    success: true,
-    data: {
-      played: games.length,
-      won: games.length - lost,
-      lost,
-      distribution,
-      ...streaks(games.filter((g) => g.status === 'won').map((g) => g.day), today()),
-    },
-  });
+router.get('/records', route(async (req, res) => {
+  const parsed = query.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ success: false, error: 'Invalid request' });
+  res.json({ success: true, data: await records(parsed.data.game, parsed.data.period) });
 }));
 
 export default router;

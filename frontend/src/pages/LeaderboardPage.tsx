@@ -1,163 +1,223 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { leaderboardApi } from '../utils/api';
 import { useAuth } from '../contexts/AuthContext';
 import { Segmented } from '../components/shared/Segmented';
+import { ErrorText, LoadingState, Page, panel } from '../components/shared/ui';
+import { Avatar, GAME_LABEL } from '../components/stats/common';
+import type {
+  BlindtestBoardRow, BoardGame, BoardPeriod, BoardRow, PartyBoardRow, RecordEntry, SonglessBoardRow,
+} from '../types';
+import { profilePath } from '../utils/paths';
 import { TrophyIcon } from '../components/shared/icons';
-import { Badge, LoadingState, Page, PageHeader, panel, SectionTitle } from '../components/shared/ui';
-import { formatDay } from './SonglessPage';
-import type { AllTimeRow, DailyRow, MyStats } from '../types';
 
-type Tab = 'today' | 'all';
-
-// Gold, silver, bronze for the podium; plain numbers after.
-const RANK_STYLES = ['bg-amber-100 text-amber-700', 'bg-neutral-200 text-neutral-700', 'bg-orange-100 text-orange-700'];
-
-function Rank({ index }: { index: number }) {
-  return (
-    <span className={`w-7 h-7 shrink-0 rounded-full flex items-center justify-center text-xs font-bold tabular-nums ${RANK_STYLES[index] ?? 'text-neutral-400'}`}>
-      {index + 1}
-    </span>
-  );
+// The number a board is ranked on, and how it reads.
+function mainValue(game: BoardGame, r: BoardRow): { value: number; unit: string } {
+  if (game === 'party') {
+    const wins = (r as PartyBoardRow).wins;
+    return { value: wins, unit: wins > 1 ? 'victoires' : 'victoire' };
+  }
+  return { value: r.points, unit: 'pts' };
 }
 
-function Avatar({ name }: { name: string }) {
-  return (
-    <span className="w-8 h-8 shrink-0 rounded-full bg-neutral-100 text-neutral-600 text-sm font-semibold flex items-center justify-center">
-      {name.slice(0, 1).toUpperCase()}
-    </span>
-  );
+interface Column {
+  label: string;
+  title?: string;
+  cell: (r: BoardRow) => React.ReactNode;
+  strong?: boolean;
 }
+
+const COLUMNS: Record<BoardGame, Column[]> = {
+  songless: [
+    { label: 'Points', cell: (r) => r.points, strong: true },
+    { label: 'Trouvés', title: 'Morceaux trouvés / parties terminées', cell: (r) => `${(r as SonglessBoardRow).won}/${r.played}` },
+    { label: '1er essai', title: 'Trouvés dès le premier extrait', cell: (r) => (r as SonglessBoardRow).first_try },
+    { label: 'Moy. essais', title: "Nombre moyen d'essais pour trouver", cell: (r) => (r as SonglessBoardRow).avg_attempts ?? '–' },
+  ],
+  blindtest: [
+    { label: 'Points', cell: (r) => r.points, strong: true },
+    { label: 'Parties', cell: (r) => r.played },
+    { label: 'Record', title: 'Meilleure partie', cell: (r) => (r as BlindtestBoardRow).best },
+    { label: 'Trouvés', title: 'Bonnes réponses / morceaux joués', cell: (r) => `${(r as BlindtestBoardRow).found}/${(r as BlindtestBoardRow).tracks}` },
+    { label: 'Pts/morceau', title: 'Points moyens par morceau', cell: (r) => (r as BlindtestBoardRow).per_track ?? '–' },
+  ],
+  party: [
+    { label: 'Victoires', cell: (r) => (r as PartyBoardRow).wins, strong: true },
+    { label: 'Podiums', cell: (r) => (r as PartyBoardRow).podiums },
+    { label: 'Soirées', cell: (r) => r.played },
+    { label: 'Points', cell: (r) => r.points },
+  ],
+};
+
+// The board covers everything since the start; the API still takes a period.
+const PERIOD: BoardPeriod = 'all';
 
 export function LeaderboardPage() {
   const { me } = useAuth();
-  const [tab, setTab] = useState<Tab>('today');
-  const [daily, setDaily] = useState<{ day: string; rows: DailyRow[] } | null>(null);
-  const [all, setAll] = useState<AllTimeRow[] | null>(null);
-  const [stats, setStats] = useState<MyStats | null>(null);
+  const [game, setGame] = useState<BoardGame>('songless');
+  const [rows, setRows] = useState<BoardRow[] | null>(null);
+  const [records, setRecords] = useState<RecordEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    leaderboardApi.daily().then(setDaily).catch(() => undefined);
-    leaderboardApi.all().then(setAll).catch(() => undefined);
-    leaderboardApi.me().then(setStats).catch(() => undefined);
-  }, []);
+    let live = true;
+    setLoading(true);
+    Promise.all([leaderboardApi.board(game, PERIOD), leaderboardApi.records(game, PERIOD)])
+      .then(([board, recs]) => {
+        if (!live) return;
+        setRows(board.rows);
+        setRecords(recs);
+        setError('');
+      })
+      .catch((e) => live && setError(e.message))
+      .finally(() => live && setLoading(false));
+    return () => { live = false; };
+  }, [game]);
 
   return (
-    <Page>
-      <PageHeader
-        title="Classement"
-        subtitle={tab === 'today' && daily ? `Songless du jour, ${formatDay(daily.day)}` : 'Tous les scores depuis le début'}
-        icon={<TrophyIcon />}
-        accent="amber"
-        actions={
-          <Segmented<Tab>
-            options={[{ value: 'today', label: "Aujourd'hui" }, { value: 'all', label: 'Général' }]}
-            value={tab}
-            onChange={setTab}
-          />
-        }
-      />
+    <Page width="lg">
+      <div className="mb-6">
+        <Segmented<BoardGame>
+          options={(['songless', 'blindtest', 'party'] as const).map((g) => ({ value: g, label: GAME_LABEL[g] }))}
+          value={game}
+          onChange={setGame}
+        />
+      </div>
 
-      {tab === 'today' ? (
-        !daily ? <LoadingState /> : daily.rows.length === 0 ? (
-          <div className={`${panel} p-10 text-center`}>
-            <p className="text-neutral-500">Personne n'a encore terminé le morceau du jour. Sois le premier !</p>
-          </div>
-        ) : (
-          <ol className={`${panel} divide-y divide-neutral-100`}>
-            {daily.rows.map((r, i) => (
-              <li key={r.user_id} className={`px-4 py-3 flex items-center gap-3 ${r.user_id === me?.id ? 'bg-amber-50/40' : ''}`}>
-                <Rank index={i} />
-                <Avatar name={r.display_name} />
-                <span className="flex-1 font-medium text-neutral-900 truncate">{r.display_name}</span>
-                <Badge accent={r.status === 'won' ? 'emerald' : 'rose'}>{r.status === 'won' ? `${r.step + 1}/7` : 'X/7'}</Badge>
-                <span className="w-16 text-right font-bold text-neutral-900 tabular-nums">{r.score} pts</span>
-              </li>
-            ))}
-          </ol>
-        )
-      ) : (
-        !all ? <LoadingState /> : (
-          <div className={`${panel} overflow-x-auto`}>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-neutral-500 border-b border-neutral-100 bg-neutral-50/60">
-                  <th className="px-4 py-2.5 font-medium">Joueur</th>
-                  <th className="px-3 py-2.5 font-medium text-right">Daily</th>
-                  <th className="px-3 py-2.5 font-medium text-right">Trouvés</th>
-                  <th className="px-3 py-2.5 font-medium text-right">Série</th>
-                  <th className="px-3 py-2.5 font-medium text-right">Libre</th>
-                  <th className="px-4 py-2.5 font-medium text-right" title="Victoires / soirées jouées">Soirées</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-neutral-100">
-                {all.map((r, i) => (
-                  <tr key={r.user_id} className={r.user_id === me?.id ? 'bg-amber-50/40' : ''}>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-3">
-                        <Rank index={i} />
-                        <span className="font-medium text-neutral-900">{r.display_name}</span>
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 text-right tabular-nums font-bold text-neutral-900">{r.daily_score}</td>
-                    <td className="px-3 py-3 text-right tabular-nums text-neutral-600">{r.daily_won}/{r.daily_played}</td>
-                    <td className="px-3 py-3 text-right tabular-nums text-neutral-600" title={`Record : ${r.best}`}>{r.current}</td>
-                    <td className="px-3 py-3 text-right tabular-nums text-neutral-600">{r.free_score}</td>
-                    <td className="px-4 py-3 text-right tabular-nums text-neutral-600">{r.party_won}/{r.party_played}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )
+      {error ? <ErrorText>{error}</ErrorText> : !rows ? <LoadingState /> : (
+        // A refetch keeps the previous board, dimmed, instead of flashing.
+        <div className={`transition-opacity ${loading ? 'opacity-50' : ''}`}>
+          {rows.length === 0 ? (
+            <div className={`${panel} p-10 text-center text-neutral-500`}>
+              Aucune partie de {GAME_LABEL[game]} pour l'instant.
+            </div>
+          ) : (
+            <>
+            {records.length > 0 && <Records records={records} />}
+            {/* A player's own details live on their profile page. */}
+            <div className="mb-6">
+              <Podium game={game} rows={rows.slice(0, 3)} meId={me?.id} />
+            </div>
+            {rows.length > 3 && <Table game={game} rows={rows} meId={me?.id} />}
+            </>
+          )}
+        </div>
       )}
-
-      {stats && stats.played > 0 && <MyStatsSection stats={stats} />}
     </Page>
   );
 }
 
-function StatTile({ label, value }: { label: string; value: React.ReactNode }) {
+// --- podium ---------------------------------------------------------------------
+
+const MEDALS = [
+  { ring: 'ring-amber-300', bg: 'bg-amber-50', label: 'text-amber-700', height: 'h-24' },
+  { ring: 'ring-neutral-300', bg: 'bg-neutral-100', label: 'text-neutral-600', height: 'h-16' },
+  { ring: 'ring-orange-300', bg: 'bg-orange-50', label: 'text-orange-700', height: 'h-12' },
+];
+
+// Second, first, third from left to right, first on the tallest step.
+function Podium({ game, rows, meId }: { game: BoardGame; rows: BoardRow[]; meId?: number }) {
+  const order = [1, 0, 2].filter((i) => rows[i]);
   return (
-    <div className={`${panel} px-4 py-3`}>
-      <div className="text-2xl font-bold text-neutral-900 tabular-nums">{value}</div>
-      <div className="text-sm text-neutral-500">{label}</div>
+    <div className="grid grid-cols-3 gap-3 items-end">
+      {order.map((i) => {
+        const r = rows[i];
+        const m = MEDALS[i];
+        const { value, unit } = mainValue(game, r);
+        return (
+          <Link key={r.user_id} to={profilePath(r.username)} className="flex flex-col items-center text-center group min-w-0">
+            <span className={`rounded-full ring-4 ${m.ring} ${i === 0 ? 'scale-110' : ''}`}>
+              <Avatar url={r.avatar_url} name={r.display_name} size={i === 0 ? 'lg' : 'md'} />
+            </span>
+            <span className="mt-2 font-semibold text-neutral-900 truncate max-w-full group-hover:underline">
+              {r.display_name}{r.user_id === meId && <span className="text-neutral-400 font-normal"> (toi)</span>}
+            </span>
+            <span className="text-sm text-neutral-500 tabular-nums">
+              <span className="font-bold text-neutral-900">{value}</span> {unit}
+            </span>
+            <div className={`mt-2 w-full ${m.height} ${m.bg} rounded-t-xl flex items-start justify-center pt-2`}>
+              <span className={`text-2xl font-bold ${m.label}`}>{i + 1}</span>
+            </div>
+          </Link>
+        );
+      })}
     </div>
   );
 }
 
-function MyStatsSection({ stats }: { stats: MyStats }) {
-  const max = Math.max(1, ...stats.distribution, stats.lost);
-  const rows = [...stats.distribution.map((n, i) => ({ label: String(i + 1), n, won: true })), { label: 'X', n: stats.lost, won: false }];
+// --- table ----------------------------------------------------------------------
 
+// Everyone from the 4th place on (the podium covers the top 3).
+function Table({ game, rows, meId }: { game: BoardGame; rows: BoardRow[]; meId?: number }) {
+  const columns = COLUMNS[game];
   return (
-    <section>
-      <SectionTitle>Mes daily</SectionTitle>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-        <StatTile label="Joués" value={stats.played} />
-        <StatTile label="Trouvés" value={`${Math.round((stats.won / stats.played) * 100)} %`} />
-        <StatTile label="Série actuelle" value={stats.current} />
-        <StatTile label="Record" value={stats.best} />
-      </div>
-      <div className={`${panel} p-5`}>
-        <p className="text-sm font-medium text-neutral-700 mb-3">Trouvé à l'essai n°</p>
-        <div className="space-y-1.5">
-          {rows.map((r) => (
-            <div key={r.label} className="flex items-center gap-3 text-sm">
-              <span className="w-4 text-neutral-500 tabular-nums text-right">{r.label}</span>
-              <div className="flex-1">
-                <div
-                  className={`h-6 rounded-md flex items-center justify-end px-2 text-xs font-semibold tabular-nums ${
-                    r.won ? (r.n ? 'bg-emerald-500 text-white' : 'bg-neutral-100 text-neutral-400') : 'bg-rose-200 text-rose-800'
-                  }`}
-                  style={{ width: `${Math.max(8, (r.n / max) * 100)}%` }}
-                >
-                  {r.n}
-                </div>
-              </div>
-            </div>
+    <div className={`${panel} overflow-x-auto`}>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-neutral-500 border-b border-neutral-100">
+            <th className="px-4 py-2.5 font-medium w-10">#</th>
+            <th className="px-2 py-2.5 font-medium">Joueur</th>
+            {columns.map((c) => (
+              <th key={c.label} title={c.title} className="px-3 py-2.5 font-medium text-right whitespace-nowrap">{c.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-neutral-100">
+          {rows.slice(3).map((r, i) => (
+            <tr key={r.user_id} className={r.user_id === meId ? 'bg-amber-50/50' : 'hover:bg-neutral-50'}>
+              <td className="px-4 py-2.5 font-semibold text-neutral-400 tabular-nums">{i + 4}</td>
+              <td className="px-2 py-2.5">
+                <Link to={profilePath(r.username)} className="flex items-center gap-2.5 min-w-0 hover:underline">
+                  <Avatar url={r.avatar_url} name={r.display_name} size="xs" />
+                  <span className="font-medium text-neutral-900 truncate">
+                    {r.display_name}{r.user_id === meId && <span className="text-neutral-400 font-normal"> (toi)</span>}
+                  </span>
+                </Link>
+              </td>
+              {columns.map((c) => (
+                <td key={c.label} className={`px-3 py-2.5 text-right tabular-nums ${c.strong ? 'font-bold text-neutral-900' : 'text-neutral-600'}`}>
+                  {c.cell(r)}
+                </td>
+              ))}
+            </tr>
           ))}
-        </div>
-      </div>
-    </section>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// --- records ----------------------------------------------------------------------
+
+// Highlights under the filters, sharing the full width: the holder first
+// (picture with a trophy, name), then the feat and its value.
+function Records({ records }: { records: RecordEntry[] }) {
+  return (
+    <ul className="grid gap-3 mb-8 sm:grid-cols-2 lg:[grid-template-columns:repeat(var(--n),minmax(0,1fr))]" style={{ '--n': records.length } as React.CSSProperties}>
+      {records.map((r) => (
+        <li key={r.key} className="min-w-0">
+          <Link
+            to={profilePath(r.username)}
+            className="h-full flex items-center gap-4 rounded-xl border border-neutral-200 bg-white px-4 py-3.5 hover:border-neutral-300 hover:shadow-sm transition"
+          >
+            <span className="relative shrink-0">
+              <Avatar url={r.avatar_url} name={r.display_name} size="lg" />
+              <span className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-amber-400 text-white ring-2 ring-white flex items-center justify-center">
+                <TrophyIcon className="w-3.5 h-3.5" />
+              </span>
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[11px] font-semibold uppercase tracking-wide text-neutral-400 truncate">{r.label}</span>
+              <span className="flex items-baseline gap-2 min-w-0">
+                <span className="text-xl font-bold text-neutral-900 tabular-nums whitespace-nowrap">{r.value}</span>
+                <span className="text-sm font-medium text-neutral-700 truncate">{r.display_name}</span>
+              </span>
+              {r.detail && <span className="block text-xs text-neutral-400 truncate">{r.detail}</span>}
+            </span>
+          </Link>
+        </li>
+      ))}
+    </ul>
   );
 }

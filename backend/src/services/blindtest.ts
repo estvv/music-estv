@@ -100,20 +100,20 @@ export async function hitsOnly(trackIds: number[], minCount: number): Promise<nu
   return ranked.slice(0, Math.max(minCount * 2, Math.ceil(ranked.length / 2))).map((r) => r.id);
 }
 
-// Pool of a source (or the daily pool), optionally narrowed to hits, as tracks.
-export async function poolTracks(sourceId: number | undefined, opts: { hits?: boolean; minCount: number }): Promise<Track[]> {
+// Pool of a source, optionally narrowed to hits, as tracks.
+export async function poolTracks(sourceId: number, opts: { hits?: boolean; minCount: number }): Promise<Track[]> {
   let ids = await poolTrackIds(sourceId);
   if (ids.length === 0) throw new BlindtestError('This playlist has no playable tracks yet', 409);
   if (opts.hits) ids = await hitsOnly(ids, opts.minCount);
   return [...(await getTracksByIds(ids)).values()];
 }
 
-export async function startBlindtest(userId: number, opts: { sourceId?: number; rounds: number; mode: AnswerMode; hits?: boolean }) {
+export async function startBlindtest(userId: number, opts: { sourceId: number; rounds: number; mode: AnswerMode; hits?: boolean }) {
   const tracks = await poolTracks(opts.sourceId, { hits: opts.hits, minCount: opts.rounds });
   const rounds = buildRounds(tracks, opts.rounds, opts.mode);
   return (await db.get<BlindtestRow>(`
     INSERT INTO blindtests (user_id, source_id, answer_mode, rounds) VALUES (?, ?, ?, ?) RETURNING *
-  `, [userId, opts.sourceId ?? null, opts.mode, JSON.stringify(rounds)]))!;
+  `, [userId, opts.sourceId, opts.mode, JSON.stringify(rounds)]))!;
 }
 
 export async function getOwnedBlindtest(id: number, userId: number): Promise<BlindtestRow> {
@@ -122,7 +122,7 @@ export async function getOwnedBlindtest(id: number, userId: number): Promise<Bli
   return row;
 }
 
-const reveal = (t: Track) => ({ title: t.title, artist: t.artist, cover_url: t.cover_url, deezer_id: t.deezer_id });
+const reveal = (t: Track) => ({ title: t.title, artist: t.artist, cover_url: t.cover_url, deezer_id: t.deezer_id, spotify_id: t.spotify_id });
 
 export async function publicBlindtest(row: BlindtestRow) {
   const rounds = JSON.parse(row.rounds) as Round[];
@@ -132,7 +132,8 @@ export async function publicBlindtest(row: BlindtestRow) {
 
   return {
     id: row.id,
-    source_name: source?.name ?? 'Playlists du daily',
+    source_id: row.source_id,
+    source_name: source?.name ?? 'Playlist supprimée',
     answer_mode: row.answer_mode,
     total: rounds.length,
     current: row.current,

@@ -1,113 +1,168 @@
-import { useCallback, useEffect, useState } from 'react';
-import { sourcesApi, spotifyApi } from '../../utils/api';
-import { useAuth } from '../../contexts/AuthContext';
-import type { SpotifyPlaylist, UserSource } from '../../types';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { sourcesApi } from '../../utils/api';
+import { Modal } from '../shared/Modal';
+import { CheckIcon, ChevronDownIcon, ListIcon, LockIcon, SearchIcon } from '../shared/icons';
+import { inputClass } from '../shared/Field';
+import { IconTile } from '../shared/ui';
+import { SourceTile } from './SourceTile';
+import { sourceKindLabel } from './labels';
+import type { UserSource } from '../../types';
 
-export interface SourceSelection {
-  id: number | '';
-  // False while the chosen playlist is still importing (or failed to).
-  ready: boolean;
+const LAST_KEY = 'music.lastSource';
+
+// Playlists that can be played right now (imported, not mid-sync), plus the
+// last one picked in this browser so a new game starts on it.
+export function usePlayableSources() {
+  const [sources, setSources] = useState<UserSource[] | null>(null);
+  const [last, setLast] = useState<number | ''>('');
+
+  useEffect(() => {
+    sourcesApi.list().then((all) => {
+      const list = all.filter((s) => s.track_count > 0 && !s.sync);
+      setSources(list);
+      try {
+        const stored = Number(localStorage.getItem(LAST_KEY));
+        if (stored && list.some((s) => s.id === stored)) setLast(stored);
+      } catch {
+        // Storage blocked: start without a pick.
+      }
+    }).catch(() => setSources([]));
+  }, []);
+
+  const remember = useCallback((id: number) => {
+    setLast(id);
+    try {
+      localStorage.setItem(LAST_KEY, String(id));
+    } catch {
+      // Not remembered, that is all.
+    }
+  }, []);
+
+  return { sources, last, remember };
 }
 
-// Playlist chooser for the free games. Besides the playlists already added, it
-// lists the user's own Spotify playlists and likes: picking one of those adds
-// it as a source on the spot and waits for its import.
-export function SourcePicker({ onChange }: { onChange: (selection: SourceSelection) => void }) {
-  const { me } = useAuth();
-  const [sources, setSources] = useState<UserSource[]>([]);
-  const [playlists, setPlaylists] = useState<SpotifyPlaylist[]>([]);
-  const [value, setValue] = useState('');
-  const [error, setError] = useState('');
+// Selectable list of playlists, grouped into mine and the others', with a
+// filter once the list gets long.
+export const GROUP_LABEL = 'text-xs font-semibold uppercase tracking-wide text-neutral-400';
 
-  const load = useCallback(() => sourcesApi.list().then(setSources).catch(() => undefined), []);
+// Title of the first group shown, for callers that put it in their own header.
+export const firstGroupTitle = (sources: UserSource[]) => (sources.some((s) => s.mine) ? 'Mes playlists' : 'Playlists des autres');
 
-  useEffect(() => {
-    load();
-  }, [load]);
+// One selectable playlist line: cover, name (lock when private), origin, size.
+export function SourceOption({ source: s, active, onPick }: { source: UserSource; active: boolean; onPick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onPick}
+      aria-pressed={active}
+      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors ${active ? 'bg-neutral-100' : 'hover:bg-neutral-50'}`}
+    >
+      <SourceTile kind={s.kind} image={s.image_url} />
+      <span className="flex-1 min-w-0">
+        <span className="flex items-center gap-1.5 font-medium text-neutral-900 min-w-0">
+          <span className="truncate">{s.name}</span>
+          {!s.is_public && <LockIcon className="w-3.5 h-3.5 shrink-0 text-neutral-400" />}
+        </span>
+        <span className="block text-xs text-neutral-500 truncate">
+          {sourceKindLabel(s.kind)}{!s.mine && s.owner_name ? ` de ${s.owner_name}` : ''} · {s.track_count} morceaux
+        </span>
+      </span>
+      {active && <CheckIcon className="w-5 h-5 text-neutral-900 shrink-0" />}
+    </button>
+  );
+}
 
-  // Dev-mode Spotify apps can only read playlists the user owns.
-  useEffect(() => {
-    if (!me?.spotify) return;
-    spotifyApi.playlists().then((list) => setPlaylists(list.filter((p) => p.owned))).catch(() => undefined);
-  }, [me?.spotify]);
+export function SourceList({ sources, value, onPick, hideFirstTitle = false }: {
+  sources: UserSource[];
+  value: number | '';
+  onPick: (id: number) => void;
+  hideFirstTitle?: boolean;
+}) {
+  const [filter, setFilter] = useState('');
+  const visible = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    return q ? sources.filter((s) => s.name.toLowerCase().includes(q)) : sources;
+  }, [sources, filter]);
+  const mine = visible.filter((s) => s.mine);
+  const others = visible.filter((s) => !s.mine);
 
-  const selected = value.startsWith('s:') ? sources.find((s) => s.id === Number(value.slice(2))) : undefined;
-  const importing = Boolean(selected?.sync && !selected.sync.error);
-  const ready = value === '' || Boolean(selected && !selected.sync && selected.track_count > 0);
+  const group = (title: string, items: UserSource[], showTitle = true) => items.length > 0 && (
+    <div>
+      {showTitle && <p className={`px-3 pt-3 pb-1 ${GROUP_LABEL}`}>{title}</p>}
+      <ul>
+        {items.map((s) => {
+          const active = s.id === value;
+          return (
+            <li key={s.id}><SourceOption source={s} active={active} onPick={() => onPick(s.id)} /></li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 
-  useEffect(() => {
-    if (!importing) return;
-    const timer = setInterval(load, 2000);
-    return () => clearInterval(timer);
-  }, [importing, load]);
-
-  useEffect(() => {
-    onChange({ id: selected?.id ?? '', ready });
-  }, [selected?.id, ready, onChange]);
-
-  const choose = async (next: string) => {
-    setValue(next);
-    setError('');
-    if (!next.startsWith('sp:') && next !== 'liked') return;
-    try {
-      const source = next === 'liked'
-        ? await sourcesApi.create('spotify_liked', '', true)
-        : await sourcesApi.create('spotify_playlist', next.slice(3), true);
-      await load();
-      setValue(`s:${source.id}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Import impossible');
-      setValue('');
-    }
-  };
-
-  const mine = sources.filter((s) => s.mine && (s.track_count > 0 || s.sync));
-  const others = sources.filter((s) => !s.mine && s.track_count > 0);
-  const known = new Set(sources.map((s) => s.spotify_id));
-  const hasLiked = sources.some((s) => s.mine && s.kind === 'spotify_liked');
-  const fromSpotify = playlists.filter((p) => !known.has(p.id));
-
-  const label = (s: UserSource) => (s.sync && !s.sync.error ? `${s.name} (import…)` : `${s.name} (${s.track_count})`);
-
-  let status = '';
-  if (value.startsWith('sp:') || value === 'liked') status = 'Ajout…';
-  else if (importing) status = `Import ${selected!.sync!.done}/${selected!.sync!.total || '…'}`;
-  else if (selected?.sync?.error) status = 'Import raté';
-  else if (selected && selected.track_count === 0) status = 'Aucun titre trouvé';
+  if (sources.length === 0) {
+    return (
+      <div className="py-6 text-center text-sm text-neutral-500">
+        Aucune playlist importée pour l'instant.{' '}
+        <Link to="/playlists" className="font-medium text-neutral-900 underline">Importer une playlist</Link>
+      </div>
+    );
+  }
 
   return (
-    <div className="flex items-center gap-2 min-w-0">
-      {(status || error) && (
-        <span className={`text-xs whitespace-nowrap ${error || selected?.sync?.error ? 'text-red-600' : 'text-violet-600'}`} title={error}>
-          {error ? 'Erreur' : status}
-        </span>
+    <div className="space-y-1">
+      {sources.length > 5 && (
+        <div className="relative px-3 pb-1">
+          <SearchIcon className="w-4 h-4 absolute left-6 top-1/2 -translate-y-1/2 text-neutral-400" />
+          <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Chercher une playlist…" className={`${inputClass} pl-9`} />
+        </div>
       )}
-      <select
-        value={value}
-        onChange={(e) => choose(e.target.value)}
-        className="max-w-56 truncate pl-3 pr-8 py-1.5 border border-neutral-200 rounded-lg text-sm bg-white focus:outline-none focus:border-neutral-500"
-        aria-label="Playlist"
-      >
-        <option value="">Playlists du daily</option>
-        {mine.length > 0 && (
-          <optgroup label="Mes playlists">
-            {mine.map((s) => <option key={s.id} value={`s:${s.id}`}>{label(s)}</option>)}
-          </optgroup>
-        )}
-        {me?.spotify && (!hasLiked || fromSpotify.length > 0) && (
-          <optgroup label="Mon compte Spotify">
-            {!hasLiked && <option value="liked">Mes titres likés</option>}
-            {fromSpotify.map((p) => (
-              <option key={p.id} value={`sp:${p.id}`}>{p.name}{p.total != null ? ` (${p.total})` : ''}</option>
-            ))}
-          </optgroup>
-        )}
-        {others.length > 0 && (
-          <optgroup label="Playlists des autres">
-            {others.map((s) => <option key={s.id} value={`s:${s.id}`}>{label(s)}{s.owner_name ? ` · ${s.owner_name}` : ''}</option>)}
-          </optgroup>
-        )}
-      </select>
+      {group('Mes playlists', mine, !(hideFirstTitle && mine.length > 0))}
+      {group('Playlists des autres', others, !(hideFirstTitle && mine.length === 0))}
+      {filter && visible.length === 0 && <p className="px-3 py-6 text-center text-sm text-neutral-500">Aucune playlist ne correspond.</p>}
     </div>
+  );
+}
+
+// Compact button + chooser modal, for forms that need a playlist field.
+export function SourcePicker({ value, onChange }: { value: number | ''; onChange: (id: number | '') => void }) {
+  const { sources, last, remember } = usePlayableSources();
+  const [open, setOpen] = useState(false);
+
+  // Start on the playlist played last, but never override a choice already made.
+  useEffect(() => {
+    if (last && value === '') onChange(last);
+  }, [last, value, onChange]);
+
+  const selected = sources?.find((s) => s.id === value);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className={`inline-flex items-center gap-2 max-w-64 pl-1.5 pr-2.5 py-1 rounded-lg border bg-white text-sm transition-colors ${
+          selected ? 'border-neutral-200 hover:bg-neutral-50 hover:border-neutral-300' : 'border-neutral-900 ring-2 ring-neutral-900/10 hover:bg-neutral-50'
+        }`}
+      >
+        <span className="scale-75 -m-1.5">
+          {selected ? <SourceTile kind={selected.kind} image={selected.image_url} /> : <IconTile icon={<ListIcon />} accent="neutral" />}
+        </span>
+        <span className="truncate font-medium text-neutral-800">{selected?.name ?? 'Choisir une playlist'}</span>
+        <ChevronDownIcon className="w-4 h-4 shrink-0 text-neutral-400" />
+      </button>
+      {open && (
+        <Modal title="Choisir une playlist" onClose={() => setOpen(false)} width="md">
+          <div className="-mx-3">
+            <SourceList
+              sources={sources ?? []}
+              value={value}
+              onPick={(id) => { remember(id); onChange(id); setOpen(false); }}
+            />
+          </div>
+        </Modal>
+      )}
+    </>
   );
 }

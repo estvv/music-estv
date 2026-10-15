@@ -17,12 +17,16 @@ const displayName = nameParts.join(' ') || username;
 
 const existing = await db.get('SELECT id FROM users WHERE lower(username) = lower(?)', [username]);
 if (existing) {
-  await db.run('UPDATE users SET password_hash = ?, is_admin = true, disabled = false WHERE lower(username) = lower(?)', [hash, username]);
+  await db.run(`
+    UPDATE users SET password_hash = ?, is_admin = true, disabled = false, must_change_password = true WHERE lower(username) = lower(?)
+  `, [hash, username]);
   console.log(`Admin "${username}" reset.`);
 } else {
-  await db.run('INSERT INTO users (username, display_name, password_hash, is_admin) VALUES (?, ?, ?, true)', [username, displayName, hash]);
+  await db.run(`
+    INSERT INTO users (username, display_name, password_hash, is_admin, must_change_password) VALUES (?, ?, ?, true, true)
+  `, [username, displayName, hash]);
   console.log(`Admin "${username}" created.`);
 }
 console.log(`Password: ${password}`);
-console.log('You can change it from your profile page.');
+console.log('It must be changed at the first login.');
 await closeDatabase();

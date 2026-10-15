@@ -24,7 +24,7 @@ export function PartyHostPage() {
     return (
       <div className="max-w-xl mx-auto px-4 py-20 text-center">
         <p className="text-neutral-600 mb-6">Le salon est fermé.</p>
-        <Link to="/" className={primaryButton}>Retour à l'accueil</Link>
+        <Link to="/" className={primaryButton}>Retour</Link>
       </div>
     );
   }

@@ -11,6 +11,9 @@ import type { RoomInfo, RoomState } from '../types';
 import { choiceStyle } from '../utils/theme';
 import { MusicIcon } from '../components/shared/icons';
 
+// Room codes are 6 letters (see CODE_LENGTH in backend/src/services/rooms.ts).
+const CODE_LENGTH = 6;
+
 // Phone screen for party guests. Public: no account needed, a nickname is enough.
 // Logged-in accounts join under their own name (needed for "Qui a liké ça ?").
 export function JoinPage() {
@@ -40,13 +43,13 @@ function CodeEntry() {
       <form onSubmit={(e) => { e.preventDefault(); navigate(`/join/${code.trim().toUpperCase()}`); }} className="space-y-3">
         <input
           value={code}
-          onChange={(e) => setCode(e.target.value.toUpperCase().slice(0, 4))}
+          onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, CODE_LENGTH))}
           placeholder="CODE"
           autoCapitalize="characters"
           className={`${inputClass} py-4 text-center text-3xl font-bold tracking-widest`}
           autoFocus
         />
-        <button disabled={code.length !== 4} className="w-full py-4 rounded-lg bg-neutral-900 text-white text-lg font-medium disabled:opacity-40">
+        <button disabled={code.length !== CODE_LENGTH} className="w-full py-4 rounded-lg bg-neutral-900 text-white text-lg font-medium disabled:opacity-40">
           Rejoindre
         </button>
       </form>

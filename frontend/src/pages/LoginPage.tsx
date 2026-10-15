@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { authApi } from '../utils/api';
 import { useAuth } from '../contexts/AuthContext';
 import { inputClass } from '../components/shared/Field';
-import { MusicIcon } from '../components/shared/icons';
 
 export function LoginPage() {
   const { refresh } = useAuth();
@@ -31,11 +30,7 @@ export function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-neutral-50 px-4">
       <div className="max-w-sm w-full bg-white rounded-2xl border border-neutral-200 shadow-sm p-8">
         <div className="text-center mb-8">
-          <span className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-neutral-900 text-emerald-400 flex items-center justify-center">
-            <MusicIcon className="w-7 h-7" />
-          </span>
           <h1 className="text-3xl font-bold text-neutral-900 mb-2">Music</h1>
-          <p className="text-neutral-600">Quiz musicaux entre amis. Les comptes sont créés par l'admin.</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3">

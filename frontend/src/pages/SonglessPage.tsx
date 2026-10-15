@@ -1,25 +1,19 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { songlessApi } from '../utils/api';
 import { useClipPlayer } from '../components/songless/useClipPlayer';
-import { GuessInput } from '../components/songless/GuessInput';
+import { GuessField, GuessPanel, useGuessSearch } from '../components/songless/GuessInput';
 import { Timeline } from '../components/songless/Timeline';
-import { Badge, ErrorText, LoadingState, Page, PageHeader, panel, primaryButton, secondaryButton } from '../components/shared/ui';
-import { CalendarIcon, HeadphonesIcon, PauseIcon, PlayIcon, ShuffleIcon } from '../components/shared/icons';
+import { ErrorText, LoadingState, Page, panel, primaryButton, secondaryButton } from '../components/shared/ui';
+import { BulbIcon, FlagIcon, PauseIcon, PlayIcon } from '../components/shared/icons';
+import { ListenButtons } from '../components/shared/ListenButtons';
 import { accent, GAME_ACCENT } from '../utils/theme';
 import type { GameState, Guess, SearchResult } from '../types';
 
-const MODE_TITLES: Record<GameState['mode'], string> = {
-  daily: 'Songless du jour',
-  daily_personal: 'Mon Spotify du jour',
-  free: 'Songless libre',
-};
-
-const MODE_ICONS: Record<GameState['mode'], React.ReactNode> = {
-  daily: <CalendarIcon />,
-  daily_personal: <HeadphonesIcon />,
-  free: <ShuffleIcon />,
-};
+// secondaryButton without its colours, so the tinted variants never fight
+// over bg/border/text classes.
+const tintedButton =
+  'inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
 
 export function SonglessPage() {
   const { id } = useParams();
@@ -39,6 +33,25 @@ export function SonglessPage() {
     game?.unlocked_ms ?? 0,
   );
 
+  // Space plays/stops the clip from anywhere except a text field. On a focused
+  // button it would otherwise click it again (a second "Passer" by accident).
+  const playerRef = useRef(player);
+  playerRef.current = player;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = e.target as HTMLElement;
+      if (el.closest('input, textarea, select, [contenteditable="true"]')) return;
+      e.preventDefault();
+      const p = playerRef.current;
+      if (p.loading) return;
+      if (p.playing) p.stop();
+      else p.play();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const act = useCallback(async (fn: () => Promise<GameState>) => {
     setBusy(true);
     setError('');
@@ -51,12 +64,18 @@ export function SonglessPage() {
     }
   }, []);
 
-  const onPick = (r: SearchResult) => act(() => songlessApi.guess(gameId, r.deezer_id));
+  const search = useGuessSearch();
+  const onPick = (r: SearchResult) => {
+    search.reset();
+    act(() => songlessApi.guess(gameId, r.deezer_id));
+  };
   const onSkip = () => act(() => songlessApi.skip(gameId));
+  const onGiveUp = () => act(() => songlessApi.giveUp(gameId));
 
   const playAgain = async () => {
     try {
-      const next = await songlessApi.start('free');
+      if (!game?.source_id) return navigate('/');
+      const next = await songlessApi.start(game.source_id);
       navigate(`/songless/${next.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erreur');
@@ -66,57 +85,70 @@ export function SonglessPage() {
   if (!game) return error ? <Page><ErrorText>{error}</ErrorText></Page> : <LoadingState />;
 
   const nextStepMs = game.steps_ms[game.step + 1];
+  const extra = nextStepMs ? `+${((nextStepMs - game.unlocked_ms) / 1000).toLocaleString('fr-FR')} s` : '';
 
   return (
-    <Page>
-      <PageHeader
-        title={MODE_TITLES[game.mode]}
-        subtitle={game.day ? formatDay(game.day) : 'Trouve le titre avec le moins d\'écoute possible.'}
-        icon={MODE_ICONS[game.mode]}
-        accent={GAME_ACCENT[game.mode]}
-        actions={!finished && <Badge accent={GAME_ACCENT[game.mode]}>Essai {game.step + 1}/{game.steps_ms.length}</Badge>}
-      />
+    <Page width={finished ? 'md' : 'lg'}>
 
       {finished && game.answer && <AnswerCard game={game} />}
 
-      <div className={`${panel} p-5 mb-4`}>
-        <div className="flex items-center gap-4">
-          <button
-            onClick={player.playing ? player.stop : player.play}
-            disabled={player.loading}
-            aria-label={player.playing ? 'Pause' : 'Écouter'}
-            className="w-14 h-14 shrink-0 rounded-full bg-neutral-900 text-white flex items-center justify-center hover:bg-neutral-800 transition-colors disabled:opacity-50"
-          >
-            {player.playing ? <PauseIcon className="w-5 h-5" /> : <PlayIcon className="w-6 h-6 ml-0.5" />}
-          </button>
-          <div className="flex-1 min-w-0">
-            <Timeline stepsMs={game.steps_ms} unlockedMs={game.unlocked_ms} positionMs={player.positionMs} finished={finished} barClass={accent(GAME_ACCENT[game.mode]).solid} />
+      <div className={finished ? '' : 'lg:grid lg:grid-cols-[minmax(0,1fr)_22rem] lg:gap-6'}>
+        <div className="min-w-0">
+          <div className={`${panel} p-5 mb-4`}>
+            <div className="flex items-center gap-4">
+              <button
+                onClick={player.playing ? player.stop : player.play}
+                disabled={player.loading}
+                aria-label={player.playing ? 'Pause' : 'Écouter'}
+            title="Espace pour écouter / arrêter"
+                className="w-14 h-14 shrink-0 rounded-full bg-neutral-900 text-white flex items-center justify-center hover:bg-neutral-800 transition-colors disabled:opacity-50"
+              >
+                {player.playing ? <PauseIcon className="w-5 h-5" /> : <PlayIcon className="w-6 h-6 ml-0.5" />}
+              </button>
+              <div className="flex-1 min-w-0">
+                <Timeline stepsMs={game.steps_ms} unlockedMs={game.unlocked_ms} positionMs={player.positionMs} finished={finished} barClass={accent(GAME_ACCENT.songless).solid} />
+              </div>
+            </div>
+            {player.error && <p className="text-sm text-red-600 mt-3">{player.error}</p>}
           </div>
+
+          <GuessList guesses={game.guesses} total={game.steps_ms.length} />
+
+          {!finished && (
+            <div className="mt-4 space-y-3">
+              <GuessField s={search} disabled={busy} onPick={onPick} />
+              <GuessPanel s={search} onPick={onPick} className="h-80 lg:hidden" />
+              <div className="flex flex-wrap justify-end items-center gap-2">
+                <button onClick={onSkip} disabled={busy} className={secondaryButton}>
+                  {nextStepMs ? `Passer (${extra})` : 'Dernier essai : passer'}
+                </button>
+                <button
+                  onClick={onGiveUp}
+                  disabled={busy}
+                  className={`${tintedButton} border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100`}
+                >
+                  <FlagIcon className="w-4 h-4" />Abandonner
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-        {player.error && <p className="text-sm text-red-600 mt-3">{player.error}</p>}
+
+        {/* The grid cell stretches to the left column; the absolute panel fills
+            it without adding height, so both columns end at the same line. */}
+        {!finished && (
+          <div className="hidden lg:block relative">
+            <GuessPanel s={search} onPick={onPick} className="absolute inset-0" />
+          </div>
+        )}
       </div>
-
-      <GuessList guesses={game.guesses} total={game.steps_ms.length} />
-
-      {!finished && (
-        <div className="mt-4 space-y-3">
-          <GuessInput disabled={busy} onPick={onPick} />
-          <div className="flex justify-between items-center gap-3">
-            <p className="text-sm text-neutral-500">Tape un titre ou un artiste, puis choisis dans la liste.</p>
-            <button onClick={onSkip} disabled={busy} className={secondaryButton}>
-              {nextStepMs ? `Passer (+${(nextStepMs - game.unlocked_ms) / 1000} s)` : 'Abandonner'}
-            </button>
-          </div>
-        </div>
-      )}
 
       <div className="mt-4"><ErrorText>{error}</ErrorText></div>
 
       {finished && (
         <div className="mt-6 flex flex-wrap gap-3 justify-center">
-          <ShareButton game={game} />
-          {game.mode === 'free' && <button onClick={playAgain} className={primaryButton}>Rejouer</button>}
-          <Link to="/" className={secondaryButton}>Retour à l'accueil</Link>
+          <button onClick={playAgain} className={primaryButton}>Rejouer</button>
+          <Link to="/" className={secondaryButton}>Retour</Link>
         </div>
       )}
     </Page>
@@ -134,12 +166,18 @@ function GuessList({ guesses, total }: { guesses: Guess[]; total: number }) {
               !g ? 'bg-neutral-50 text-neutral-300'
                 : g.kind === 'right' ? 'bg-emerald-100 text-emerald-700'
                 : g.kind === 'wrong' ? 'bg-rose-50 text-rose-700'
+                : g.kind === 'hint' ? 'bg-amber-100 text-amber-700'
                 : 'bg-neutral-100 text-neutral-500'
             }`}>
-              {!g ? i + 1 : g.kind === 'right' ? '✓' : g.kind === 'wrong' ? '✗' : '–'}
+              {!g ? i + 1 : g.kind === 'right' ? '✓' : g.kind === 'wrong' ? '✗' : g.kind === 'hint' ? <BulbIcon className="w-3.5 h-3.5" /> : '–'}
             </span>
             {g?.kind === 'skip' && <span className="text-neutral-400">Passé</span>}
-            {g && g.kind !== 'skip' && (
+            {g?.kind === 'hint' && (
+              <span className="truncate text-neutral-500">
+                Indice · {g.label} <span className="font-mono text-neutral-800 tracking-wider">{g.text}</span>
+              </span>
+            )}
+            {g && (g.kind === 'right' || g.kind === 'wrong') && (
               <span className={`truncate ${g.kind === 'right' ? 'text-emerald-700 font-medium' : 'text-neutral-700'}`}>
                 {g.title} <span className="text-neutral-400">— {g.artist}</span>
               </span>
@@ -153,49 +191,16 @@ function GuessList({ guesses, total }: { guesses: Guess[]; total: number }) {
 
 function AnswerCard({ game }: { game: GameState }) {
   const a = game.answer!;
-  const won = game.status === 'won';
-  const linkClass = 'px-2.5 py-1 rounded-md border border-neutral-200 text-xs font-medium text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900 transition-colors';
   return (
-    <div className={`${panel} p-4 mb-4 flex items-center gap-5 border-t-4 ${won ? 'border-t-emerald-500' : 'border-t-rose-400'}`}>
+    <div className={`${panel} p-4 mb-4 flex items-center gap-5`}>
       {a.cover_url
         ? <img src={a.cover_url} alt="" className="w-24 h-24 rounded-lg object-cover shrink-0 shadow-sm" />
         : <div className="w-24 h-24 rounded-lg bg-neutral-100 shrink-0" />}
       <div className="min-w-0 flex-1">
-        <Badge accent={won ? 'emerald' : 'rose'}>
-          {won ? `Trouvé en ${game.step + 1} essai${game.step ? 's' : ''}, ${game.score} pts` : 'Pas trouvé cette fois'}
-        </Badge>
-        <p className="text-xl font-bold text-neutral-900 truncate mt-1.5">{a.title}</p>
+        <p className="text-xl font-bold text-neutral-900 truncate">{a.title}</p>
         <p className="text-neutral-600 truncate">{a.artist}</p>
-        <div className="flex gap-2 mt-2">
-          <a href={`https://www.deezer.com/track/${a.deezer_id}`} target="_blank" rel="noreferrer" className={linkClass}>Écouter sur Deezer</a>
-          {a.spotify_id && (
-            <a href={`https://open.spotify.com/track/${a.spotify_id}`} target="_blank" rel="noreferrer" className={linkClass}>Spotify</a>
-          )}
-        </div>
+        <div className="mt-2"><ListenButtons deezerId={a.deezer_id} spotifyId={a.spotify_id} /></div>
       </div>
     </div>
   );
-}
-
-function ShareButton({ game }: { game: GameState }) {
-  const [copied, setCopied] = useState(false);
-  const squares = Array.from({ length: game.steps_ms.length }, (_, i) => {
-    const g = game.guesses[i];
-    if (!g) return '⬜';
-    return g.kind === 'right' ? '🟩' : g.kind === 'wrong' ? '🟥' : '⬛';
-  }).join('');
-  const result = game.status === 'won' ? `${game.step + 1}/${game.steps_ms.length}` : `X/${game.steps_ms.length}`;
-  const text = `Music ${MODE_TITLES[game.mode]}${game.day ? ` ${game.day}` : ''}\n${squares} ${result}`;
-
-  const copy = async () => {
-    await navigator.clipboard.writeText(text).catch(() => undefined);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
-
-  return <button onClick={copy} className={secondaryButton}>{copied ? 'Copié' : 'Copier le résultat'}</button>;
-}
-
-export function formatDay(day: string) {
-  return new Date(`${day}T12:00:00`).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
 }

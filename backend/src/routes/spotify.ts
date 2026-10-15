@@ -18,13 +18,13 @@ router.use((_req, res, next) => {
 // 127.0.0.1 would come back without them: send the user to the right host first.
 router.get('/connect', (req, res, next) => {
   const publicHost = new URL(config.publicUrl).host;
-  if (req.get('host') !== publicHost) return res.redirect(`${config.publicUrl}/profile`);
+  if (req.get('host') !== publicHost) return res.redirect(`${config.publicUrl}/profiles/update`);
   next();
 });
 
 // Full-page navigation (not fetch): the user lands on a page, never on JSON.
 router.get('/callback', (req, res, next) => {
-  if (!req.user) return res.redirect('/profile?spotify=session');
+  if (!req.user) return res.redirect('/profiles/update?spotify=session');
   next();
 });
 
@@ -42,7 +42,7 @@ router.get('/connect', (_req, res) => {
 router.get('/callback', async (req, res) => {
   const expected = req.cookies?.[STATE_COOKIE];
   res.clearCookie(STATE_COOKIE, { path: '/api/spotify' });
-  const back = (status: string) => res.redirect(`/profile?spotify=${status}`);
+  const back = (status: string) => res.redirect(`/profiles/update?spotify=${status}`);
 
   if (typeof req.query.error === 'string') return back('denied');
   if (!expected || req.query.state !== expected || typeof req.query.code !== 'string') return back('invalid');

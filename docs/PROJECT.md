@@ -21,8 +21,8 @@ Un site privé où un petit groupe (< 10 personnes) joue à des quiz musicaux :
 |---|---|
 | Pas d'inscription publique | Aucune route ne crée de compte, à part celles réservées à l'admin. |
 | Premier admin | Créé en ligne de commande : `npm run create-admin -- <identifiant>`, qui affiche le mot de passe généré. |
-| Création de comptes | L'admin crée un compte (identifiant + nom affiché) et reçoit un **mot de passe généré** à transmettre. La personne peut le changer depuis son profil. |
-| Gestion | L'admin peut réinitialiser le mot de passe d'un compte, le désactiver ou le promouvoir admin. |
+| Création de comptes | L'admin crée un compte (identifiant + nom affiché) et reçoit un **mot de passe généré** à transmettre. À la première connexion, la personne doit le remplacer par le sien avant d'accéder au site (l'API refuse tout le reste jusque-là). |
+| Gestion | L'admin peut réinitialiser le mot de passe d'un compte (nouveau mot de passe généré, à remplacer à la connexion suivante), le désactiver ou le promouvoir admin. |
 | Mot de passe | Hashé avec scrypt (`node:crypto`, sans dépendance native). |
 | Session | Jeton aléatoire de 32 octets dans un cookie `httpOnly`, `SameSite=Lax`, valable 30 jours. Seul le **sha256** du jeton est stocké en base, ce qui rend les sessions révocables. |
 | Brute force | Limite de débit dédiée sur `/api/auth/login` : 10 essais par tranche de 15 min et par IP. |
@@ -48,7 +48,7 @@ Les changements du mode développement de février 2026, assouplis en partie en 
 | **Audio en salon sur l'écran de l'hôte** | Spotify Web Playback SDK si l'hôte a lié un compte Premium, sinon Deezer. |
 | **Goûts personnels** (top, likes, playlists perso) | Spotify, lié par compte. |
 | **Catalogue, recherche, autocomplétion** | Deezer `/search`, qui renvoie un classement de popularité (`rank`) utile pour la difficulté. |
-| **Pool du daily commun** | Playlists Deezer publiques (n'importe laquelle, y compris éditoriale) ou playlists Spotify de l'admin. |
+| **Playlists de jeu** | Playlists Deezer publiques (n'importe laquelle, y compris éditoriale), playlists Spotify ou likes Spotify, importées par chaque compte. |
 
 La correspondance Spotify → Deezer passe par l'ISRC (`GET api.deezer.com/track/isrc:<ISRC>`). Si le titre trouvé n'est pas `readable` ou n'a pas d'extrait, on se rabat sur une recherche `artist:"…" track:"…"`. La correspondance est mise en cache dans la table `tracks`.
 
@@ -60,7 +60,7 @@ Les URL d'extrait Deezer sont **signées et expirent au bout d'environ 15 min**.
 - Scopes demandés en une seule fois, pour ne pas avoir à re-lier plus tard : `user-top-read user-library-read playlist-read-private playlist-read-collaborative streaming user-read-playback-state user-modify-playback-state`.
 - Le paramètre `state` est signé et lié à la session, pour se protéger du CSRF.
 - Les jetons d'accès et de rafraîchissement sont **chiffrés en AES-256-GCM** (clé `TOKEN_ENCRYPTION_KEY`) et rafraîchis automatiquement.
-- L'utilisateur peut délier son compte à tout moment depuis son profil. Les 5 places Spotify sont gérées à la main dans le dashboard Spotify ; un compte sans Spotify joue à tout sauf au daily perso et à « Qui a liké ça ? ».
+- L'utilisateur peut délier son compte à tout moment depuis son profil. Les 5 places Spotify sont gérées à la main dans le dashboard Spotify ; un compte sans Spotify peut relier son profil Deezer public (photo, playlists, goûts) ; sans aucun des deux, il joue à tout sauf à « Qui a liké ça ? ».
 
 ## 4. Les jeux
 
@@ -68,16 +68,16 @@ Les URL d'extrait Deezer sont **signées et expirent au bout d'environ 15 min**.
 
 On entend un extrait qui s'allonge et on doit trouver le titre.
 
-- **Paliers d'écoute :** 0,1 s → 0,5 s → 1 s → 2 s → 4 s → 8 s → 16 s, soit 7 essais.
-- Une mauvaise réponse ou un « Passer » débloque le palier suivant. Après le 7ᵉ échec, la réponse est révélée.
-- **Score :** 7 points si trouvé au palier 1, 1 point au palier 7, 0 en cas d'échec.
+- **Paliers d'écoute :** 0,5 s → 2 s → 5 s → 10 s, soit 4 essais (auparavant 7, de 0,1 s à 16 s ; les anciennes parties ont été converties).
+- Une mauvaise réponse ou un « Passer » débloque le palier suivant. Après le 4ᵉ échec, la réponse est révélée.
+- **Score :** 4 points si trouvé au palier 1, 1 point au palier 4, 0 en cas d'échec.
 - **Saisie :** champ texte avec autocomplétion sur le catalogue Deezer. Une réponse est juste si c'est le même titre Deezer **ou** le même couple titre + artiste normalisé : sans accents ni casse, sans « (Remastered) », « - Live », « feat. »… Le jeu accepte ainsi les rééditions.
 - **Anti-triche :** le client ne reçoit jamais les métadonnées du titre avant la fin de la partie. L'audio passe par `/api/songless/:id/audio`, qui ne sert que **les octets correspondant au palier débloqué** (le MP3 en débit constant est découpé proportionnellement à la durée). L'état de la partie est conservé côté serveur.
-- **Modes :**
-  - **Daily commun :** un titre par jour, identique pour tous, tiré de façon déterministe du pool admin. Une seule partie par jour et par compte.
-  - **Daily perso :** un titre par jour tiré du top et des likes Spotify du compte. Nécessite Spotify.
-  - **Libre :** parties illimitées, tirées du pool ou d'une source choisie (playlist Deezer, ou une de mes playlists Spotify). Le score compte dans un classement séparé.
-- **Partage :** résultat copiable façon Wordle, par exemple `music-estv #42 🟥🟥🟩⬜⬜⬜⬜ 5/7`.
+- **Parties :** illimitées, toujours sur une playlist choisie (pas de playlist par défaut). Les 50 derniers titres joués sont évités tant que la playlist le permet.
+- **Abandon** possible à tout moment. Les indices ont été retirés.
+- **Partage :** résultat copiable façon Wordle, par exemple `Music Songless 🟥🟨🟩⬜⬜⬜⬜ 3/7`.
+
+Les modes « daily commun » et « daily perso » ont été retirés ; les anciennes parties restent en base avec leur `mode`.
 
 ### 4.2 Blind test (lot 2)
 
@@ -101,12 +101,11 @@ Le jeu en tire un blind test ou un Songless libre. Cela crée une **« Source »
 
 ### 4.4 Qui a liké ça ? (lot 3)
 
-Uniquement en salon, entre comptes reliés à Spotify (2 minimum). On joue un titre tiré du top ou des likes d'un des comptes participants, et il faut deviner à qui il appartient. Les titres présents chez plusieurs personnes sont soit exclus, soit acceptent plusieurs bonnes réponses.
+Uniquement en salon, entre comptes reliés à Spotify **ou** Deezer (2 minimum, on peut mélanger les deux). Chaque joueur apporte ses titres les plus écoutés et ses likes (Spotify) ou favoris (Deezer, profil public). On joue un titre tiré de ce mélange et il faut deviner à qui il appartient. Un même morceau est reconnu d'un service à l'autre par titre + artiste normalisés : s'il est aimé par plusieurs joueurs, chacun est une bonne réponse.
 
 ### 4.5 Classements
 
-- **Daily commun :** score du jour, série de jours consécutifs, moyenne, histogramme des paliers (comme Wordle).
-- **Toutes périodes :** somme des scores au daily commun, et classement séparé pour le mode libre.
+- **Un classement global :** points Songless (somme des scores), morceaux trouvés / parties terminées, meilleur score de blind test, victoires en soirée.
 - Seuls les comptes apparaissent dans les classements ; les invités de soirée n'ont qu'un classement de fin de partie.
 
 ## 5. Salons de soirée (lot 3)
@@ -124,7 +123,7 @@ Uniquement en salon, entre comptes reliés à Spotify (2 minimum). On joue un ti
        Serveur : état du salon en mémoire, horloge de référence
 ```
 
-- Le salon est créé par un compte connecté, qui choisit le jeu (Songless, Blind test, Qui a liké ça ?), la source et le mode de réponse. Le code fait 4 lettres, sans caractères ambigus.
+- Le salon est créé par un compte connecté, qui choisit le jeu (Songless, Blind test, Qui a liké ça ?), la source et le mode de réponse. Le code fait 6 lettres, sans caractères ambigus.
 - Le QR code encode `https://<domaine>/join/ABCD`. Un invité saisit un pseudo et reçoit un jeton de joueur stocké en `sessionStorage` : si le téléphone se met en veille, il peut se reconnecter et récupérer son score.
 - **Le serveur fait autorité :** il fixe le titre, le moment où la manche commence (horodatage serveur) et valide les réponses. Le score de vitesse se calcule à la réception côté serveur.
 - **Audio uniquement sur l'écran de l'hôte.** Les téléphones n'en reçoivent jamais : on évite le décalage et le bruit, et personne ne peut lire l'audio dans l'onglet réseau.
@@ -151,10 +150,11 @@ spotify_links(user_id PK → users, spotify_user_id, spotify_name,
               access_token_enc, refresh_token_enc, expires_at, scope, linked_at)
 tracks(id, deezer_id UNIQUE, isrc, spotify_id, title, artist, album,
        cover_url, duration, rank, created_at)        -- cache catalogue
-sources(id, kind['deezer_playlist'|'spotify_playlist'], ref, name,
-        in_daily_pool, owner_id → users, synced_at, created_at)
-source_tracks(source_id → sources, track_id → tracks) PK(source_id, track_id)
-daily_puzzles(day, scope['global'|'user:<id>'], track_id → tracks) PK(day, scope)
+sources(id, kind['deezer_playlist'|'spotify_playlist'|'spotify_liked'], ref, name,
+        owner_id → users, synced_at, created_at, missing JSONB, source_size)
+        -- in_daily_pool : colonne héritée du daily, inutilisée
+source_tracks(source_id → sources, track_id → tracks, position) PK(source_id, track_id)
+daily_puzzles(…)  -- table héritée du daily, plus écrite
 songless_games(id, user_id → users, mode['daily'|'daily_personal'|'free'],
                day NULL, track_id → tracks, step, guesses JSON,
                status['playing'|'won'|'lost'], score, created_at, finished_at)
@@ -170,17 +170,16 @@ songless_games(id, user_id → users, mode['daily'|'daily_personal'|'free'],
 | POST | `/api/auth/password` | connecté |
 | GET/POST | `/api/admin/users` | admin |
 | PATCH | `/api/admin/users/:id` (reset, désactivation, admin) | admin |
-| GET/POST/DELETE | `/api/admin/sources` (+ `/:id/sync`) | admin |
+| GET/POST/DELETE | `/api/sources` (+ `/:id/sync`, `/:id/tracks`) | connecté (gestion : propriétaire ou admin) |
 | GET | `/api/spotify/connect` → redirection · `/api/spotify/callback` | connecté |
 | DELETE | `/api/spotify` | connecté |
 | GET | `/api/spotify/playlists` | connecté |
-| GET | `/api/songless/search?q=` (autocomplétion Deezer) · `/api/songless/sources` · `/api/songless/today` | connecté |
-| POST | `/api/songless/start` `{mode, sourceId?}` | connecté |
+| GET | `/api/songless/search?q=` (autocomplétion Deezer) | connecté |
+| POST | `/api/songless/start` `{source_id}` | connecté |
 | GET | `/api/songless/:id` (état, sans le titre tant que la partie est en cours) | propriétaire |
 | GET | `/api/songless/:id/audio` (octets du palier courant) | propriétaire |
-| POST | `/api/songless/:id/guess` `{deezerId}` · `/skip` | propriétaire |
-| GET | `/api/leaderboard/daily?day=` · `/api/leaderboard/all` | connecté |
-| GET | `/api/leaderboard/me` (statistiques perso) | connecté |
+| POST | `/api/songless/:id/guess` `{deezer_id}` · `/skip` · `/hint` · `/give-up` | propriétaire |
+| GET | `/api/leaderboard` | connecté |
 
 ### 6.3 Sécurité
 
@@ -197,7 +196,7 @@ Même langage visuel que `quizz-estv`, `calendar-estv` et `news-estv` : fond bla
 
 | Lot | Contenu | État |
 |---|---|---|
-| **1. MVP** | Comptes et admin, liaison Spotify, catalogue Deezer, sources du pool, Songless (daily commun, daily perso, libre), classements, statistiques | Fait |
+| **1. MVP** | Comptes et admin, liaison Spotify, catalogue Deezer, playlists partagées, Songless, classement | Fait |
 | **2** | Blind test solo (QCM ou saisie), playlists partagées (Deezer, playlists Spotify perso, titres likés), Songless libre et blind test sur n'importe quelle playlist | Fait |
 | **3** | Salons temps réel (WebSocket `/ws`), QR code, écran hôte (son Deezer, ou Spotify Web Playback en option), QCM, saisie ou buzzer, Qui a liké ça ? | Fait |
 | **4** | Songless en salon (extraits de plus en plus longs, une tentative par extrait), classement final des soirées enregistré pour les comptes (colonne Soirées), option « Tubes uniquement » (moitié la plus populaire d'une playlist selon le `rank` Deezer), PWA installable | Fait |

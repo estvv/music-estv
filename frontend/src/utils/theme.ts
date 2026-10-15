@@ -23,9 +23,6 @@ export const ACCENTS: Record<Accent, AccentClasses> = {
 };
 
 export const GAME_ACCENT = {
-  daily: 'emerald',
-  daily_personal: 'teal',
-  free: 'blue',
   blindtest: 'violet',
   party: 'rose',
   wholiked: 'amber',

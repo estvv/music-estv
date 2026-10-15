@@ -1,10 +1,14 @@
-import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { spotifyApi } from '../utils/api';
+import { useCallback, useEffect, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { PasswordForm } from '../components/shared/PasswordForm';
-import { Badge, IconTile, Page, panel, primaryButton, secondaryButton } from '../components/shared/ui';
-import { HeadphonesIcon, LockIcon } from '../components/shared/icons';
+import { PresentationSection, type Favorite } from '../components/profile/PresentationSection';
+import { PhotoPicker } from '../components/profile/PhotoPicker';
+import { ProfilePreview } from '../components/profile/ProfilePreview';
+import { MusicAccounts, type Notice } from '../components/profile/MusicAccounts';
+import { Page, panel } from '../components/shared/ui';
+import { ChevronDownIcon, EyeIcon, LockIcon } from '../components/shared/icons';
+import { profilePath } from '../utils/paths';
 
 const SPOTIFY_MESSAGES: Record<string, { text: string; ok: boolean }> = {
   linked: { text: 'Spotify est lié à ton compte.', ok: true },
@@ -20,76 +24,61 @@ const SPOTIFY_MESSAGES: Record<string, { text: string; ok: boolean }> = {
 export function ProfilePage() {
   const { me, refresh } = useAuth();
   const [params, setParams] = useSearchParams();
-  const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
+  const [notice, setNotice] = useState<Notice>(null);
   const [passwordSaved, setPasswordSaved] = useState(false);
+  const [draft, setDraft] = useState<{ bio: string; favorites: Favorite[] }>({ bio: '', favorites: [] });
+  const onDraft = useCallback((d: { bio: string; favorites: Favorite[] }) => setDraft(d), []);
 
-  // One-shot message after the OAuth redirect, then clean the URL.
+  // One-shot message after the Spotify redirect, then clean the URL.
   useEffect(() => {
     const status = params.get('spotify');
     if (status && SPOTIFY_MESSAGES[status]) {
-      setMessage(SPOTIFY_MESSAGES[status]);
+      setNotice(SPOTIFY_MESSAGES[status]);
       refresh();
       setParams({}, { replace: true });
     }
   }, [params, setParams, refresh]);
 
-  const unlink = async () => {
-    await spotifyApi.unlink();
-    await refresh();
-    setMessage({ text: 'Spotify a été délié.', ok: true });
-  };
-
   if (!me) return null;
 
   return (
-    <Page>
-      <div className="flex items-center gap-4 mb-8">
-        <span className="w-14 h-14 rounded-full bg-neutral-900 text-white text-xl font-bold flex items-center justify-center">
-          {me.display_name.slice(0, 1).toUpperCase()}
-        </span>
-        <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-neutral-900">{me.display_name}</h1>
-          <p className="text-neutral-500">Identifiant : {me.username}{me.is_admin ? ', administrateur' : ''}</p>
+    <Page width="lg">
+      <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
+        <PhotoPicker />
+        <Link
+          to={profilePath(me.username)}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-neutral-100 text-sm font-medium text-neutral-700 hover:bg-neutral-200 hover:text-neutral-900 transition-colors"
+        >
+          <EyeIcon className="w-4 h-4" />Voir mon profil public
+        </Link>
+      </div>
+
+      <div className="grid lg:grid-cols-[minmax(0,1fr)_20rem] gap-6 items-start">
+        <PresentationSection userId={me.id} onDraft={onDraft} />
+        <div className="lg:sticky lg:top-20">
+          <ProfilePreview me={me} bio={draft.bio} favorites={draft.favorites} />
         </div>
       </div>
 
-      <section className={`${panel} p-5 mb-4`}>
-        <div className="flex items-center gap-3 mb-3">
-          <IconTile icon={<HeadphonesIcon />} accent="emerald" />
-          <h2 className="font-semibold text-neutral-900">Spotify</h2>
-          {me.spotify && <Badge accent="emerald">Lié</Badge>}
-        </div>
-        {!me.spotify_available ? (
-          <p className="text-sm text-neutral-500">Spotify n'est pas encore configuré sur ce serveur.</p>
-        ) : me.spotify ? (
-          <div className="flex items-center justify-between gap-4">
-            <p className="text-sm text-neutral-600">
-              Lié au compte <span className="font-medium text-neutral-900">{me.spotify.name}</span>. Tes titres
-              les plus écoutés et tes likes alimentent ton daily perso.
-            </p>
-            <button onClick={unlink} className={secondaryButton}>Délier</button>
-          </div>
-        ) : (
-          <div className="flex items-center justify-between gap-4">
-            <p className="text-sm text-neutral-600">
-              Lie ton compte pour jouer sur tes propres goûts. L'audio vient toujours de Deezer, donc pas besoin de Premium.
-            </p>
-            <a href={spotifyApi.connectUrl} className={`${primaryButton} shrink-0`}>Lier Spotify</a>
-          </div>
-        )}
-        {message && (
-          <p className={`text-sm mt-3 ${message.ok ? 'text-emerald-700' : 'text-red-600'}`}>{message.text}</p>
-        )}
-      </section>
+      <div className="mt-10">
+        <MusicAccounts notice={notice} setNotice={setNotice} />
+      </div>
 
-      <section className={`${panel} p-5`}>
-        <div className="flex items-center gap-3 mb-4">
-          <IconTile icon={<LockIcon />} accent="neutral" />
-          <h2 className="font-semibold text-neutral-900">Mot de passe</h2>
+      {/* Rarely needed: folded away. */}
+      <details className={`${panel} mt-10 group`}>
+        <summary className="flex items-center gap-3 px-5 py-4 cursor-pointer list-none select-none">
+          <span className="w-9 h-9 rounded-lg bg-neutral-100 text-neutral-600 flex items-center justify-center"><LockIcon className="w-4 h-4" /></span>
+          <span className="flex-1">
+            <span className="block font-semibold text-neutral-900">Mot de passe</span>
+            <span className="block text-xs text-neutral-500">Changer le mot de passe de connexion</span>
+          </span>
+          <ChevronDownIcon className="w-5 h-5 text-neutral-400 transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="px-5 pb-5 pt-1 max-w-md">
+          <PasswordForm onDone={() => setPasswordSaved(true)} />
+          {passwordSaved && <p className="text-sm text-emerald-700 mt-3">Mot de passe changé. Tes autres sessions ont été déconnectées.</p>}
         </div>
-        <PasswordForm onDone={() => setPasswordSaved(true)} />
-        {passwordSaved && <p className="text-sm text-emerald-700 mt-3">Mot de passe changé. Tes autres sessions ont été déconnectées.</p>}
-      </section>
+      </details>
     </Page>
   );
 }

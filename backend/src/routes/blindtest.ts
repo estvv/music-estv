@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { parseId, route } from '../http.js';
 import { getPreviewBytes } from '../services/deezer.js';
 import { sliceLength } from '../services/songless.js';
+import { getVisibleSource } from '../services/sources.js';
 import {
   answer, CLIP_MS, currentRoundTrack, getOwnedBlindtest, nextRound, publicBlindtest, startBlindtest,
 } from '../services/blindtest.js';
@@ -10,7 +11,7 @@ import {
 const router = Router();
 
 const startBody = z.object({
-  source_id: z.number().int().positive().optional(),
+  source_id: z.number().int().positive(),
   rounds: z.number().int().min(3).max(30).default(10),
   answer_mode: z.enum(['type', 'mcq']).default('mcq'),
   hits: z.boolean().default(false),
@@ -19,6 +20,7 @@ const startBody = z.object({
 router.post('/start', route(async (req, res) => {
   const parsed = startBody.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ success: false, error: 'Invalid request' });
+  await getVisibleSource(parsed.data.source_id, req.user!.id);
   const row = await startBlindtest(req.user!.id, {
     sourceId: parsed.data.source_id, rounds: parsed.data.rounds, mode: parsed.data.answer_mode, hits: parsed.data.hits,
   });

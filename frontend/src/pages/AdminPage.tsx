@@ -1,21 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
 import { adminApi } from '../utils/api';
-import { AddSourceModal } from '../components/sources/AddSourceModal';
-import { sourceKindLabel } from '../components/sources/labels';
 import { useAuth } from '../contexts/AuthContext';
 import { Field, inputClass } from '../components/shared/Field';
 import { Modal } from '../components/shared/Modal';
 import { Badge, ErrorText, ghostButton, LoadingState, Page, PageHeader, panel, primaryButton, secondaryButton } from '../components/shared/ui';
-import { ShieldIcon } from '../components/shared/icons';
-import { SourceTile } from '../components/sources/SourceTile';
-import type { AdminSource, AdminUser } from '../types';
+import { PencilIcon, PlusIcon, ShieldIcon } from '../components/shared/icons';
+import { Avatar } from '../components/shared/Avatar';
+import type { AdminUser } from '../types';
 
 export function AdminPage() {
   return (
     <Page width="lg">
-      <PageHeader title="Admin" subtitle="Les comptes et les playlists du daily." icon={<ShieldIcon />} accent="neutral" />
       <UsersSection />
-      <SourcesSection />
     </Page>
   );
 }
@@ -26,6 +22,8 @@ function UsersSection() {
   const { me } = useAuth();
   const [users, setUsers] = useState<AdminUser[] | null>(null);
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<AdminUser | null>(null);
+  const { refresh } = useAuth();
   const [secret, setSecret] = useState<{ username: string; password: string } | null>(null);
   const [error, setError] = useState('');
 
@@ -53,7 +51,13 @@ function UsersSection() {
     <section className="mb-12">
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-lg font-semibold text-neutral-900">Comptes {users && <span className="text-neutral-400 font-normal tabular-nums">{users.length}</span>}</h2>
-        <button onClick={() => setCreating(true)} className={primaryButton}>Créer un compte</button>
+        <button
+          type="button"
+          onClick={() => setCreating(true)}
+          className="inline-flex items-center gap-1 text-sm font-medium text-neutral-500 hover:text-neutral-900 transition-colors"
+        >
+          <PlusIcon className="w-4 h-4" />Ajouter
+        </button>
       </div>
 
       {!users ? <LoadingState /> : (
@@ -72,9 +76,7 @@ function UsersSection() {
                 <tr key={u.id} className={u.disabled ? 'text-neutral-400' : ''}>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
-                      <span className={`w-8 h-8 shrink-0 rounded-full text-sm font-semibold flex items-center justify-center ${u.is_admin ? 'bg-neutral-900 text-white' : 'bg-neutral-100 text-neutral-600'}`}>
-                        {u.display_name.slice(0, 1).toUpperCase()}
-                      </span>
+                      <Avatar url={u.avatar_url} name={u.display_name} size="sm" />
                       <div>
                         <div className="font-medium text-neutral-900 flex items-center gap-2">{u.display_name}{u.is_admin && <Badge>Admin</Badge>}</div>
                         <div className="text-xs text-neutral-500">{u.username}</div>
@@ -85,21 +87,28 @@ function UsersSection() {
                     {u.spotify_name ? <Badge accent="emerald">{u.spotify_name}</Badge> : <span className="text-neutral-300">—</span>}
                   </td>
                   <td className="px-3 py-3">
-                    {u.disabled ? <Badge>Désactivé</Badge> : <Badge accent="emerald">Actif</Badge>}
+                    {u.disabled ? <Badge>Désactivé</Badge>
+                      : u.must_change_password ? <Badge accent="amber">Mot de passe à changer</Badge>
+                      : <Badge accent="emerald">Actif</Badge>}
                   </td>
                   <td className="px-4 py-3">
-                    {u.id !== me?.id && (
-                      <div className="flex justify-end gap-1 whitespace-nowrap">
-                        <button onClick={() => update(u, { reset_password: true })} className={ghostButton}>Réinitialiser</button>
-                        <button onClick={() => update(u, { is_admin: !u.is_admin })} className={ghostButton}>
-                          {u.is_admin ? 'Retirer admin' : 'Rendre admin'}
-                        </button>
-                        <button onClick={() => update(u, { disabled: !u.disabled })} className={ghostButton}>
-                          {u.disabled ? 'Réactiver' : 'Désactiver'}
-                        </button>
-                        <button onClick={() => remove(u)} className={`${ghostButton} text-red-600 hover:text-red-700`}>Supprimer</button>
-                      </div>
-                    )}
+                    <div className="flex justify-end gap-1 whitespace-nowrap">
+                      <button onClick={() => setEditing(u)} className={`${ghostButton} inline-flex items-center gap-1.5`}>
+                        <PencilIcon className="w-3.5 h-3.5" />Modifier
+                      </button>
+                      {u.id !== me?.id && (
+                        <>
+                          <button onClick={() => update(u, { reset_password: true })} className={ghostButton}>Réinitialiser</button>
+                          <button onClick={() => update(u, { is_admin: !u.is_admin })} className={ghostButton}>
+                            {u.is_admin ? 'Retirer admin' : 'Rendre admin'}
+                          </button>
+                          <button onClick={() => update(u, { disabled: !u.disabled })} className={ghostButton}>
+                            {u.disabled ? 'Réactiver' : 'Désactiver'}
+                          </button>
+                          <button onClick={() => remove(u)} className={`${ghostButton} text-red-600 hover:text-red-700`}>Supprimer</button>
+                        </>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -109,6 +118,18 @@ function UsersSection() {
       )}
       <div className="mt-2"><ErrorText>{error}</ErrorText></div>
 
+      {editing && (
+        <EditUserModal
+          user={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            // Renaming oneself also changes the header.
+            if (editing.id === me?.id) refresh();
+            setEditing(null);
+            load();
+          }}
+        />
+      )}
       {creating && (
         <CreateUserModal
           onClose={() => setCreating(false)}
@@ -122,7 +143,7 @@ function UsersSection() {
       {secret && (
         <Modal title="Identifiants du compte" onClose={() => setSecret(null)}>
           <p className="text-sm text-neutral-600 mb-4">
-            Transmets ces identifiants à la personne. Le mot de passe ne sera plus affiché ; elle pourra le changer depuis son profil.
+            Transmets ces identifiants à la personne, en privé. Le mot de passe ne sera plus affiché ; elle devra le remplacer par le sien à sa première connexion.
           </p>
           <div className="rounded-lg bg-neutral-50 border border-neutral-200 p-4 text-sm space-y-1 select-all">
             <div>Identifiant : <span className="font-semibold">{secret.username}</span></div>
@@ -139,6 +160,59 @@ function UsersSection() {
         </Modal>
       )}
     </section>
+  );
+}
+
+// Login name and display name of any account, the admin's own included.
+function EditUserModal({ user, onClose, onSaved }: { user: AdminUser; onClose: () => void; onSaved: () => void }) {
+  const [username, setUsername] = useState(user.username);
+  const [displayName, setDisplayName] = useState(user.display_name);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setError('');
+    try {
+      await adminApi.updateUser(user.id, { username: username.trim(), display_name: displayName.trim() });
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error && err.message === 'Username already taken' ? 'Cet identifiant est déjà pris.'
+        : err instanceof Error ? err.message : 'Erreur');
+      setSaving(false);
+    }
+  };
+
+  const changedLogin = username.trim().toLowerCase() !== user.username.toLowerCase();
+
+  return (
+    <Modal title={`Modifier ${user.display_name}`} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <Field label="Identifiant de connexion" hint="Lettres, chiffres, _ . -">
+          <input value={username} onChange={(e) => setUsername(e.target.value)} className={inputClass} autoFocus />
+        </Field>
+        <Field label="Nom affiché" hint="Visible dans les classements, les profils et les soirées.">
+          <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} className={inputClass} />
+        </Field>
+        {changedLogin && (
+          <p className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2">
+            La personne devra se connecter avec « {username.trim()} ». Son mot de passe ne change pas.
+          </p>
+        )}
+        <ErrorText>{error}</ErrorText>
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className={secondaryButton}>Annuler</button>
+          <button
+            type="submit"
+            disabled={saving || username.trim().length < 2 || !displayName.trim()}
+            className={primaryButton}
+          >
+            {saving ? 'Enregistrement…' : 'Enregistrer'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -182,95 +256,5 @@ function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreate
         </div>
       </form>
     </Modal>
-  );
-}
-
-// --- sources -----------------------------------------------------------------
-
-function SourcesSection() {
-  const [sources, setSources] = useState<AdminSource[] | null>(null);
-  const [adding, setAdding] = useState(false);
-  const [error, setError] = useState('');
-
-  const load = useCallback(() => adminApi.sources().then(setSources).catch((e) => setError(e.message)), []);
-  useEffect(() => { load(); }, [load]);
-
-  // Poll while a sync is running so the track count fills in.
-  const syncing = sources?.some((s) => s.sync && !s.sync.error);
-  useEffect(() => {
-    if (!syncing) return;
-    const timer = setInterval(load, 2000);
-    return () => clearInterval(timer);
-  }, [syncing, load]);
-
-  const act = async (fn: () => Promise<unknown>) => {
-    setError('');
-    try {
-      await fn();
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Erreur');
-    }
-  };
-
-  const poolSize = sources?.filter((s) => s.in_daily_pool).reduce((n, s) => n + s.track_count, 0) ?? 0;
-
-  return (
-    <section>
-      <div className="flex items-center justify-between mb-1">
-        <h2 className="text-lg font-semibold text-neutral-900">Playlists</h2>
-        <button onClick={() => setAdding(true)} className={primaryButton}>Ajouter une playlist</button>
-      </div>
-      <p className="text-sm text-neutral-500 mb-3">
-        Le daily commun tire un morceau par jour parmi les playlists cochées ({poolSize} morceaux). Toutes servent au mode libre.
-      </p>
-
-      {!sources ? <LoadingState /> : sources.length === 0 ? (
-        <p className={`${panel} p-6 text-sm text-neutral-500 text-center`}>
-          Aucune playlist : le daily ne peut pas démarrer. Ajoute une playlist Deezer publique, par exemple un top national.
-        </p>
-      ) : (
-        <ul className={`${panel} divide-y divide-neutral-100`}>
-          {sources.map((s) => (
-            <li key={s.id} className="px-4 py-3 flex items-center gap-3">
-              <input
-                type="checkbox"
-                checked={s.in_daily_pool}
-                onChange={(e) => act(() => adminApi.setInPool(s.id, e.target.checked))}
-                title="Dans le pool du daily"
-                aria-label={`${s.name} dans le pool du daily`}
-                className="accent-emerald-600 w-4 h-4"
-              />
-              <SourceTile kind={s.kind} />
-              <div className="flex-1 min-w-0">
-                <div className="font-medium text-neutral-900 truncate">{s.name}</div>
-                <div className="text-xs text-neutral-500">
-                  {sourceKindLabel(s.kind)}{s.owner_name ? ` de ${s.owner_name}` : ''}, {s.track_count} morceaux jouables
-                  {s.sync && !s.sync.error && `, synchro ${s.sync.done}/${s.sync.total || '…'}`}
-                  {s.sync?.error && <span className="text-red-600">, échec : {s.sync.error}</span>}
-                </div>
-              </div>
-              <button onClick={() => act(() => adminApi.syncSource(s.id))} className={ghostButton}>Resynchroniser</button>
-              <button
-                onClick={() => window.confirm(`Retirer « ${s.name} » ?`) && act(() => adminApi.deleteSource(s.id))}
-                className={`${ghostButton} text-red-600 hover:text-red-700`}
-              >
-                Retirer
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="mt-2"><ErrorText>{error}</ErrorText></div>
-
-      {adding && (
-        <AddSourceModal
-          showDailyPool
-          submit={(kind, ref, in_daily_pool) => adminApi.createSource({ kind, ref, in_daily_pool })}
-          onClose={() => setAdding(false)}
-          onAdded={() => { setAdding(false); load(); }}
-        />
-      )}
-    </section>
   );
 }

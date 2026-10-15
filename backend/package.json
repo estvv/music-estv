@@ -10,7 +10,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "create-admin": "if [ -d src ]; then tsx src/scripts/create-admin.ts; else node dist/scripts/create-admin.js; fi",
-    "db:fixtures": "if [ -d src ]; then tsx src/scripts/fixtures.ts; else node dist/scripts/fixtures.js; fi"
+    "db:fixtures": "if [ -d src ]; then tsx src/scripts/fixtures.ts; else node dist/scripts/fixtures.js; fi",
+    "db:demo": "tsx src/scripts/demo.ts"
   },
   "dependencies": {
     "compression": "^1.8.1",

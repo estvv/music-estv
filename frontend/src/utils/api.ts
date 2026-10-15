@@ -1,6 +1,6 @@
 import type {
   RoomAnswerMode, RoomGame, RoomInfo,
-  AdminSource, Blindtest, SourceKind, AdminUser, AllTimeRow, DailyRow, GameState, Me, MyStats, SearchResult, SpotifyPlaylist, TodayStatus, UserSource,
+  Blindtest, BoardGame, DeezerPlaylist, BoardPeriod, BoardRow, DayPoints, SourceKind, AdminUser, GameState, History, Me, PlayerProfile, RecordEntry, MissingTrack, SearchResult, SourceTrack, SpotifyPlaylist, UserSource,
 } from '../types';
 
 export class ApiError extends Error {
@@ -28,22 +28,31 @@ export const authApi = {
   logout: () => request<void>('/auth/logout', { method: 'POST' }),
   changePassword: (current: string, next: string) =>
     request<void>('/auth/password', { method: 'POST', body: { current, next } }),
+  updateProfile: (body: { bio?: string | null; favorite_deezer_ids?: number[] }) =>
+    request<void>('/auth/profile', { method: 'PATCH', body }),
+  // The image is sent as is (already resized by the page), not as JSON.
+  uploadAvatar: async (image: Blob): Promise<{ avatar_url: string | null }> => {
+    const res = await fetch('/api/auth/avatar', { method: 'PUT', headers: { 'Content-Type': image.type }, body: image, credentials: 'same-origin' });
+    const payload = await res.json().catch(() => ({ error: 'Request failed' }));
+    if (!res.ok) throw new ApiError(payload.error || `HTTP ${res.status}`, res.status);
+    return payload.data;
+  },
+  removeAvatar: () => request<{ avatar_url: string | null }>('/auth/avatar', { method: 'DELETE' }),
 };
 
 export const songlessApi = {
-  today: () => request<TodayStatus>('/songless/today'),
-  start: (mode: GameState['mode'], sourceId?: number) =>
-    request<GameState>('/songless/start', { method: 'POST', body: { mode, source_id: sourceId } }),
+  start: (sourceId: number) => request<GameState>('/songless/start', { method: 'POST', body: { source_id: sourceId } }),
   get: (id: number) => request<GameState>(`/songless/${id}`),
   guess: (id: number, deezerId: number) =>
     request<GameState>(`/songless/${id}/guess`, { method: 'POST', body: { deezer_id: deezerId } }),
   skip: (id: number) => request<GameState>(`/songless/${id}/skip`, { method: 'POST' }),
+  giveUp: (id: number) => request<GameState>(`/songless/${id}/give-up`, { method: 'POST' }),
   search: (q: string) => request<SearchResult[]>(`/songless/search?q=${encodeURIComponent(q)}`),
   audioUrl: (id: number, step: number) => `/api/songless/${id}/audio?step=${step}`,
 };
 
 export const blindtestApi = {
-  start: (body: { source_id?: number; rounds: number; answer_mode: Blindtest['answer_mode']; hits: boolean }) =>
+  start: (body: { source_id: number; rounds: number; answer_mode: Blindtest['answer_mode']; hits: boolean }) =>
     request<Blindtest>('/blindtest/start', { method: 'POST', body }),
   get: (id: number) => request<Blindtest>(`/blindtest/${id}`),
   audioUrl: (id: number, round: number) => `/api/blindtest/${id}/audio?round=${round}`,
@@ -54,9 +63,10 @@ export const blindtestApi = {
 
 export const sourcesApi = {
   list: () => request<UserSource[]>('/sources'),
-  // reuse: hand back the existing source instead of a "already added" error.
-  create: (kind: SourceKind, ref: string, reuse = false) =>
-    request<UserSource>('/sources', { method: 'POST', body: { kind, ref, reuse } }),
+  create: (kind: SourceKind, ref: string, isPublic: boolean) =>
+    request<UserSource>('/sources', { method: 'POST', body: { kind, ref, is_public: isPublic } }),
+  setPublic: (id: number, isPublic: boolean) => request<void>(`/sources/${id}`, { method: 'PATCH', body: { is_public: isPublic } }),
+  tracks: (id: number) => request<{ tracks: SourceTrack[]; missing: MissingTrack[] }>(`/sources/${id}/tracks`),
   sync: (id: number) => request<void>(`/sources/${id}/sync`, { method: 'POST' }),
   remove: (id: number) => request<void>(`/sources/${id}`, { method: 'DELETE' }),
 };
@@ -77,9 +87,27 @@ export const roomsApi = {
 };
 
 export const leaderboardApi = {
-  daily: (day?: string) => request<{ day: string; rows: DailyRow[] }>(`/leaderboard/daily${day ? `?day=${day}` : ''}`),
-  all: () => request<AllTimeRow[]>('/leaderboard/all'),
-  me: () => request<MyStats>('/leaderboard/me'),
+  board: (game: BoardGame, period: BoardPeriod) =>
+    request<{ game: BoardGame; period: BoardPeriod; rows: BoardRow[] }>(`/leaderboard?game=${game}&period=${period}`),
+  records: (game: BoardGame, period: BoardPeriod) => request<RecordEntry[]>(`/leaderboard/records?game=${game}&period=${period}`),
+};
+
+export const playersApi = {
+  // By username (profile URLs) or numeric id.
+  get: (ref: string | number, period: BoardPeriod = 'all') =>
+    request<PlayerProfile>(`/players/${encodeURIComponent(String(ref))}?period=${period}`),
+  progress: (id: number, game: BoardGame, period: BoardPeriod) =>
+    request<DayPoints[]>(`/players/${id}/progress?game=${game}&period=${period}`),
+};
+
+export const historyApi = {
+  get: () => request<History>('/history'),
+};
+
+export const deezerApi = {
+  link: (ref: string) => request<{ id: number; name: string }>('/deezer/link', { method: 'POST', body: { ref } }),
+  unlink: () => request<void>('/deezer/link', { method: 'DELETE' }),
+  playlists: () => request<DeezerPlaylist[]>('/deezer/playlists'),
 };
 
 export const spotifyApi = {
@@ -93,14 +121,7 @@ export const adminApi = {
   users: () => request<AdminUser[]>('/admin/users'),
   createUser: (body: { username: string; display_name: string; is_admin: boolean }) =>
     request<{ user: AdminUser; password: string }>('/admin/users', { method: 'POST', body }),
-  updateUser: (id: number, body: Partial<{ display_name: string; is_admin: boolean; disabled: boolean; reset_password: true }>) =>
+  updateUser: (id: number, body: Partial<{ username: string; display_name: string; is_admin: boolean; disabled: boolean; reset_password: true }>) =>
     request<{ password?: string }>(`/admin/users/${id}`, { method: 'PATCH', body }),
   deleteUser: (id: number) => request<void>(`/admin/users/${id}`, { method: 'DELETE' }),
-  sources: () => request<AdminSource[]>('/admin/sources'),
-  createSource: (body: { kind: SourceKind; ref: string; in_daily_pool: boolean }) =>
-    request<AdminSource>('/admin/sources', { method: 'POST', body }),
-  setInPool: (id: number, in_daily_pool: boolean) =>
-    request<void>(`/admin/sources/${id}`, { method: 'PATCH', body: { in_daily_pool } }),
-  syncSource: (id: number) => request<void>(`/admin/sources/${id}/sync`, { method: 'POST' }),
-  deleteSource: (id: number) => request<void>(`/admin/sources/${id}`, { method: 'DELETE' }),
 };

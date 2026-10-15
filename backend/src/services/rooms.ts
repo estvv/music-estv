@@ -3,10 +3,10 @@ import type { WebSocket } from 'ws';
 import { HttpError } from '../errors.js';
 import { buildRounds, CLIP_MS, pointsFor, poolTracks, type RoundResult } from './blindtest.js';
 import { db } from '../db/index.js';
-import { getTrack } from './deezer.js';
+import { getDeezerLink, getTrack, getUserTasteTracks as getDeezerTaste } from './deezer.js';
 import { MAX_STEPS, STEPS_MS } from './songless.js';
 import { getSpotifyLink, getTasteTracks, resolveSpotifyTrack } from './spotify.js';
-import { getTracksByIds, isSameSong, normalizeArtist, type Track } from './tracks.js';
+import { getTracksByIds, isSameSong, normalizeArtist, normalizeTitle, upsertDeezerTrack, type Track } from './tracks.js';
 
 // Party rooms live in memory only: a room is an evening, and a restart simply
 // ends it. The server is the authority on timing and scoring; the host screen
@@ -19,6 +19,8 @@ const MAX_ROOMS = 20;
 const MAX_PLAYERS = 30;
 const IDLE_MS = 2 * 60 * 60 * 1000;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+// 24^6 ≈ 190 million codes: not guessable by trying codes at random.
+export const CODE_LENGTH = 6;
 // Songless in a room: after each clip, players get this long to type a guess
 // before the next, longer clip.
 export const SONGLESS_ANSWER_MS = 12000;
@@ -86,7 +88,7 @@ const rooms = new Map<string, Room>();
 
 function newCode(): string {
   for (;;) {
-    const code = Array.from(randomBytes(4), (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('');
+    const code = Array.from(randomBytes(CODE_LENGTH), (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('');
     if (!rooms.has(code)) return code;
   }
 }
@@ -223,31 +225,60 @@ export async function startGame(room: Room) {
 }
 
 async function buildBlindtestRounds(room: Room): Promise<PreparedRound[]> {
-  const pool = await poolTracks(room.sourceId ?? undefined, { hits: room.hits, minCount: room.totalRounds });
+  if (!room.sourceId) throw new RoomError('Pick a playlist for this game');
+  const pool = await poolTracks(room.sourceId, { hits: room.hits, minCount: room.totalRounds });
   return buildRounds(pool, room.totalRounds, room.answerMode === 'mcq' ? 'mcq' : 'type')
     .map((r) => ({ trackId: r.track_id, choices: r.choices, owners: null }));
 }
 
-// Each account player with Spotify contributes tracks from their top/likes; a
-// track liked by several players accepts each of them as a right answer.
+// Each account player with a linked Spotify and/or Deezer contributes tracks
+// from their top and likes. The same song on both services is recognised by
+// normalised title + artist, so a song liked by several players (whatever their
+// service) accepts each of them as a right answer.
+interface TasteItem {
+  key: string;
+  resolve: () => Promise<Track | null>;
+}
+
+async function tasteOf(userId: number): Promise<TasteItem[]> {
+  const items: TasteItem[] = [];
+  if (await getSpotifyLink(userId)) {
+    for (const t of await getTasteTracks(userId).catch(() => [])) {
+      items.push({ key: songKey(t.name, t.artists[0]?.name ?? ''), resolve: () => resolveSpotifyTrack(t).catch(() => null) });
+    }
+  }
+  const deezer = await getDeezerLink(userId);
+  if (deezer) {
+    for (const t of await getDeezerTaste(deezer.deezer_user_id).catch(() => [])) {
+      items.push({ key: songKey(t.title_short || t.title, t.artist.name), resolve: () => upsertDeezerTrack(t).catch(() => null) });
+    }
+  }
+  const seen = new Set<string>();
+  return items.filter((i) => !seen.has(i.key) && Boolean(seen.add(i.key)));
+}
+
+const songKey = (title: string, artist: string) => `${normalizeTitle(title)}|${normalizeArtist(artist)}`;
+
 async function buildWhoLikedRounds(room: Room): Promise<PreparedRound[]> {
   const contenders: Player[] = [];
+  const tasteByPlayer = new Map<number, TasteItem[]>();
   for (const p of room.players.values()) {
-    if (p.userId && await getSpotifyLink(p.userId)) contenders.push(p);
+    if (!p.userId) continue;
+    const taste = await tasteOf(p.userId);
+    if (taste.length === 0) continue;
+    contenders.push(p);
+    tasteByPlayer.set(p.id, shuffle(taste));
   }
   room.contenders = contenders.map((p) => p.id);
   if (contenders.length < 2) {
-    throw new RoomError('"Who liked it?" needs at least 2 players logged in with a linked Spotify', 409);
+    throw new RoomError('"Who liked it?" needs at least 2 players logged in with a linked Spotify or Deezer', 409);
   }
 
-  const ownersBySpotifyId = new Map<string, Set<number>>();
-  const tracksByPlayer = new Map<number, Awaited<ReturnType<typeof getTasteTracks>>>();
+  const owners = new Map<string, Set<number>>();
   for (const p of contenders) {
-    const taste = await getTasteTracks(p.userId!);
-    tracksByPlayer.set(p.id, shuffle(taste));
-    for (const t of taste) {
-      if (!ownersBySpotifyId.has(t.id)) ownersBySpotifyId.set(t.id, new Set());
-      ownersBySpotifyId.get(t.id)!.add(p.id);
+    for (const t of tasteByPlayer.get(p.id)!) {
+      if (!owners.has(t.key)) owners.set(t.key, new Set());
+      owners.get(t.key)!.add(p.id);
     }
   }
 
@@ -258,16 +289,16 @@ async function buildWhoLikedRounds(room: Room): Promise<PreparedRound[]> {
   while (rounds.length < room.totalRounds && attempts < room.totalRounds * 4) {
     for (const p of contenders) {
       if (rounds.length >= room.totalRounds) break;
-      const candidate = tracksByPlayer.get(p.id)!.find((t) => !used.has(t.id));
+      const candidate = tasteByPlayer.get(p.id)!.find((t) => !used.has(t.key));
       attempts += 1;
       if (!candidate) continue;
-      used.add(candidate.id);
-      const track = await resolveSpotifyTrack(candidate).catch(() => null);
-      if (track) rounds.push({ trackId: track.id, choices: null, owners: [...ownersBySpotifyId.get(candidate.id)!] });
+      used.add(candidate.key);
+      const track = await candidate.resolve();
+      if (track) rounds.push({ trackId: track.id, choices: null, owners: [...owners.get(candidate.key)!] });
     }
-    if (contenders.every((p) => tracksByPlayer.get(p.id)!.every((t) => used.has(t.id)))) break;
+    if (contenders.every((p) => tasteByPlayer.get(p.id)!.every((t) => used.has(t.key)))) break;
   }
-  if (rounds.length === 0) throw new RoomError('No playable track found in your Spotify accounts', 409);
+  if (rounds.length === 0) throw new RoomError('No playable track found in the players\' accounts', 409);
   return shuffle(rounds);
 }
 

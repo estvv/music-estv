@@ -4,7 +4,7 @@ import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import { rateLimit } from 'express-rate-limit';
 import { config } from './config.js';
-import { loadSession, requireAdmin, requireUser } from './auth/session.js';
+import { loadSession, requireAdmin, requirePasswordChanged, requireUser } from './auth/session.js';
 import authRoutes from './routes/auth.js';
 import adminRoutes from './routes/admin.js';
 import spotifyRoutes from './routes/spotify.js';
@@ -13,6 +13,9 @@ import leaderboardRoutes from './routes/leaderboard.js';
 import blindtestRoutes from './routes/blindtest.js';
 import sourcesRoutes from './routes/sources.js';
 import roomsRoutes from './routes/rooms.js';
+import historyRoutes from './routes/history.js';
+import playersRoutes from './routes/players.js';
+import deezerRoutes from './routes/deezer.js';
 import { HttpError } from './errors.js';
 import { DeezerError } from './services/deezer.js';
 
@@ -67,7 +70,15 @@ export function createApp() {
     next();
   });
 
+  // API answers are per-user and some carry secrets (a generated password, the
+  // Spotify access token): never kept in the browser or a proxy cache.
+  app.use('/api', (_req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+  });
+
   app.use('/api', loadSession);
+  app.use('/api', requirePasswordChanged);
   app.use('/api/auth', authRoutes);
   app.use('/api/admin', requireAdmin, adminRoutes);
   app.use('/api/spotify', spotifyRoutes);
@@ -75,6 +86,9 @@ export function createApp() {
   app.use('/api/blindtest', requireUser, blindtestRoutes);
   app.use('/api/sources', requireUser, sourcesRoutes);
   app.use('/api/leaderboard', requireUser, leaderboardRoutes);
+  app.use('/api/history', requireUser, historyRoutes);
+  app.use('/api/players', requireUser, playersRoutes);
+  app.use('/api/deezer', requireUser, deezerRoutes);
   // Mixed access: creating needs an account, joining/searching only a room token.
   app.use('/api/rooms', roomsRoutes);
 

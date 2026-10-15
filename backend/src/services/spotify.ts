@@ -76,16 +76,16 @@ export async function linkAccount(userId: number, code: string) {
   const tokens = await tokenRequest({ grant_type: 'authorization_code', code, redirect_uri: redirectUri() });
   if (!tokens.refresh_token) throw new SpotifyError('Spotify returned no refresh token');
 
-  const me = await fetchJson<{ id: string; display_name?: string }>(`${API}/me`, tokens.access_token);
+  const me = await fetchJson<{ id: string; display_name?: string; images?: { url: string }[] | null }>(`${API}/me`, tokens.access_token);
   await db.run(`
-    INSERT INTO spotify_links (user_id, spotify_user_id, spotify_name, access_token_enc, refresh_token_enc, expires_at, scope)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO spotify_links (user_id, spotify_user_id, spotify_name, spotify_image, access_token_enc, refresh_token_enc, expires_at, scope)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (user_id) DO UPDATE SET
-      spotify_user_id = excluded.spotify_user_id, spotify_name = excluded.spotify_name,
+      spotify_user_id = excluded.spotify_user_id, spotify_name = excluded.spotify_name, spotify_image = excluded.spotify_image,
       access_token_enc = excluded.access_token_enc, refresh_token_enc = excluded.refresh_token_enc,
       expires_at = excluded.expires_at, scope = excluded.scope, linked_at = now()
   `, [
-    userId, me.id, me.display_name ?? me.id,
+    userId, me.id, me.display_name ?? me.id, pickImage(me.images) ?? '',
     encrypt(tokens.access_token), encrypt(tokens.refresh_token),
     Date.now() + tokens.expires_in * 1000, tokens.scope,
   ]);
@@ -185,7 +185,7 @@ export async function getMyPlaylists(userId: number): Promise<SpotifyPlaylistSum
 // Playlist entries moved from `track` to `item` in the Feb 2026 API; accept both.
 type PlaylistEntry = { item?: SpotifyTrack | null; track?: SpotifyTrack | null };
 
-export async function getPlaylistTracks(userId: number, playlistId: string, max = 500): Promise<SpotifyTrack[]> {
+export async function getPlaylistTracks(userId: number, playlistId: string, max = 3000): Promise<SpotifyTrack[]> {
   const out: SpotifyTrack[] = [];
   let url: string | null = `/playlists/${encodeURIComponent(playlistId)}/items?limit=100`;
   while (url && out.length < max) {
@@ -199,9 +199,21 @@ export async function getPlaylistTracks(userId: number, playlistId: string, max 
   return out;
 }
 
-export async function getPlaylistName(userId: number, playlistId: string): Promise<string> {
-  const p = await spotifyGet<{ name: string }>(userId, `/playlists/${encodeURIComponent(playlistId)}?fields=name`);
-  return p.name;
+// Images come largest first: the last one is the smallest (often 60 px), the
+// middle one about 300 px, enough for a list thumbnail.
+const pickImage = (images?: { url: string }[] | null) => (images?.length ? images[Math.min(1, images.length - 1)].url : null);
+
+export async function getPlaylistInfo(userId: number, playlistId: string): Promise<{ name: string; image: string | null }> {
+  const p = await spotifyGet<{ name: string; images?: { url: string }[] | null }>(
+    userId, `/playlists/${encodeURIComponent(playlistId)}?fields=name,images`,
+  );
+  return { name: p.name, image: pickImage(p.images) };
+}
+
+// Profile picture of the linked account: the face of its "liked tracks" playlist.
+export async function getProfileImage(userId: number): Promise<string | null> {
+  const me = await spotifyGet<{ images?: { url: string }[] | null }>(userId, '/me');
+  return pickImage(me.images);
 }
 
 // The user's taste: top tracks (mid + short term) and the 50 latest likes.
@@ -219,7 +231,7 @@ export async function getTasteTracks(userId: number): Promise<SpotifyTrack[]> {
   });
 }
 
-export async function getLikedTracks(userId: number, max = 500): Promise<SpotifyTrack[]> {
+export async function getLikedTracks(userId: number, max = 3000): Promise<SpotifyTrack[]> {
   const out: SpotifyTrack[] = [];
   let url: string | null = '/me/tracks?limit=50';
   while (url && out.length < max) {
