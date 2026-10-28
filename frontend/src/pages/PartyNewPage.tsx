@@ -130,7 +130,7 @@ export function PartyNewPage() {
               </Row>
             )}
             {game === 'songless' && (
-              <Row label="Extraits" hint="0,5 s, 2 s, 5 s puis 10 s : une réponse par extrait, plus tôt = plus de points." />
+              <Row label="Extraits" hint="1 s, 2 s, 5 s puis 10 s : une réponse par extrait, plus tôt = plus de points." />
             )}
             <Row label="Nombre de morceaux">
               <Segmented<number>

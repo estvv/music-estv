@@ -118,7 +118,7 @@ export async function records(game: Game, period: Period): Promise<RecordEntry[]
       GROUP BY u.id ORDER BY n DESC, MIN(g.finished_at) LIMIT 1
     `);
     if (first) {
-      out.push({ key: 'first_try', label: 'Trouvés au 1er essai', value: String(first.n), user_id: first.user_id, display_name: first.display_name, detail: 'dès 0,5 s' });
+      out.push({ key: 'first_try', label: 'Trouvés au 1er essai', value: String(first.n), user_id: first.user_id, display_name: first.display_name, detail: 'dès 1 s' });
     }
     const games = await db.all<{ user_id: number; display_name: string; won: boolean }>(`
       SELECT u.id AS user_id, u.display_name, g.status = 'won' AS won

@@ -5,7 +5,7 @@ import { HttpError } from '../errors.js';
 
 // Listening time unlocked at each of the 4 attempts. A wrong guess or a skip
 // moves one step; finding the song scores 4 points down to 1.
-export const STEPS_MS = [500, 2000, 5000, 10000];
+export const STEPS_MS = [1000, 2000, 5000, 10000];
 export const MAX_STEPS = STEPS_MS.length;
 const PREVIEW_MS = 30000;
 

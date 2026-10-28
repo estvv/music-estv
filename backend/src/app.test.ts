@@ -173,7 +173,7 @@ describe('songless', () => {
   it('lets the player give up, and has no hints any more', async () => {
     const start = await request(app).post('/api/songless/start').set('Cookie', adminCookie).send({ source_id: sourceId });
     const id = start.body.data.id;
-    expect(start.body.data.steps_ms).toEqual([500, 2000, 5000, 10000]);
+    expect(start.body.data.steps_ms).toEqual([1000, 2000, 5000, 10000]);
     expect(start.body.data).not.toHaveProperty('hints_left');
     expect((await request(app).post(`/api/songless/${id}/hint`).set('Cookie', adminCookie)).status).toBe(404);
 

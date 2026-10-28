@@ -68,7 +68,7 @@ Les URL d'extrait Deezer sont **signées et expirent au bout d'environ 15 min**.
 
 On entend un extrait qui s'allonge et on doit trouver le titre.
 
-- **Paliers d'écoute :** 0,5 s → 2 s → 5 s → 10 s, soit 4 essais (auparavant 7, de 0,1 s à 16 s ; les anciennes parties ont été converties).
+- **Paliers d'écoute :** 1 s → 2 s → 5 s → 10 s, soit 4 essais (auparavant 7, de 0,1 s à 16 s, puis un premier palier à 0,5 s ; les anciennes parties ont été converties).
 - Une mauvaise réponse ou un « Passer » débloque le palier suivant. Après le 4ᵉ échec, la réponse est révélée.
 - **Score :** 4 points si trouvé au palier 1, 1 point au palier 4, 0 en cas d'échec.
 - **Saisie :** champ texte avec autocomplétion sur le catalogue Deezer. Une réponse est juste si c'est le même titre Deezer **ou** le même couple titre + artiste normalisé : sans accents ni casse, sans « (Remastered) », « - Live », « feat. »… Le jeu accepte ainsi les rééditions.
